@@ -45,7 +45,7 @@ jobs:
             mv "${IDF_CMAKE_DIR}/cmake" "${IDF_CMAKE_DIR}/cmake.bak"
             ln -sf "/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/cmake" "${IDF_CMAKE_DIR}/cmake"
           fi
-          cmake --version
+          "${IDF_CMAKE_DIR}/cmake" --version
 
       - name: Install QEMU for Xtensa
         shell: bash

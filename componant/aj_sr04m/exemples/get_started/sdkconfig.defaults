@@ -1,0 +1,3 @@
+# Force C++20 instead of the IDF default (which leaks C++26 in some IDF
+# components on GCC 14+). SonarCloud CFamily 6.80 does not support C++26 yet.
+CONFIG_COMPILER_CXX_STANDARD_GNU20=y

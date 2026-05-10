@@ -53,3 +53,8 @@ dkms.conf
 
 # debug information files
 *.dwo
+build/
+sdkconfig*
+.vscode/
+!sdkconfig.defaults
+dependencies.lock

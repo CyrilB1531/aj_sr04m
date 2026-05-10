@@ -67,7 +67,7 @@ jobs:
 
   upload_components:
     runs-on: ubuntu-latest
-    needs: build
+    needs: build-and-scan
     if: startsWith(github.event.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4

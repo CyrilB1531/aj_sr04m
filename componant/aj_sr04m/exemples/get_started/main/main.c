@@ -1,9 +1,12 @@
 // #define CONFIG_USE_LIGHT_SLEEP 1
 #include "aj_sr04m.h"
+#include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 const char MAIN_TAG[] = "MAIN";
 
-void delay_ms(uint8_t ms) { vTaskDelay(ms / 10); }
+void delay_ms(uint32_t ms) { vTaskDelay(ms / 10); }
 
 void app_main(void) {
   int16_t distance = 0;

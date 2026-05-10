@@ -16,80 +16,54 @@ jobs:
           python-version: "3.12"
       - uses: pre-commit/action@v3.0.0
 
-  build:
+  build-and-scan:
     runs-on: ubuntu-latest
     needs: pre-commit
-    env:
-      BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
-      BUILD_WRAPPER_DOWNLOAD_URL: https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
-    strategy:
-      matrix:
-        target: [esp32s3]
-        esp_idf_version: [v6.0.1]
-        path: [componant/aj_sr04m/exemples/get_started]
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
-      - name: Download SonarCloud build-wrapper
-        run: |
-          mkdir -p .sonar
-          curl -sSLo .sonar/build-wrapper-linux-x86.zip "${BUILD_WRAPPER_DOWNLOAD_URL}"
-          unzip -q -o .sonar/build-wrapper-linux-x86.zip -d .sonar/
-          chmod +x .sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64
-      - name: esp-idf build (wrapped)
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: ${{ matrix.esp_idf_version }}
-          target: ${{ matrix.target }}
-          path: ${{ matrix.path }}
-          command: "/app/${{ github.repository }}/.sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} idf.py build size"
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts-${{ matrix.target }}
-          path: |
-            ${{ matrix.path }}/build
-            ${{ matrix.path }}/${{ env.BUILD_WRAPPER_OUT_DIR }}
-          if-no-files-found: error
-          include-hidden-files: true
-
-  sonarqube:
-    needs: build
-    name: SonarQube
-    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.0.1
     env:
       EXAMPLE_PATH: componant/aj_sr04m/exemples/get_started
       BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
-      DOCKER_PREFIX: /app/${{ github.repository_owner }}/${{ github.event.repository.name }}
+      IDF_TARGET: esp32s3
+      BUILD_WRAPPER_DOWNLOAD_URL: https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+      SONAR_SCANNER_DOWNLOAD_URL: https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.2.0.5079-linux-x64.zip
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts-esp32s3
-          path: ${{ env.EXAMPLE_PATH }}
-      - name: Rewrite Docker paths in build artifacts
+
+      - name: Install Sonar tooling
         run: |
-          # esp-idf-ci-action builds in a Docker container with workspace at $DOCKER_PREFIX.
-          # On the SonarQube runner the same files are at $GITHUB_WORKSPACE -- rewrite paths
-          # so that Sonar's CFamily plugin can resolve sources, headers and the build-wrapper
-          # output (build-wrapper-dump.json contains absolute paths recorded inside Docker).
-          find "${EXAMPLE_PATH}/build" "${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}" -type f \( \
-              -name "*.json" \
-              -o -name "*flags" \
-              -o -path "*/CMakeFiles/*" \
-            \) -exec sed -i "s|${DOCKER_PREFIX}|${GITHUB_WORKSPACE}|g" {} +
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends curl unzip
+          mkdir -p /opt/sonar
+          curl -fsSLo /opt/sonar/build-wrapper.zip "${BUILD_WRAPPER_DOWNLOAD_URL}"
+          unzip -q /opt/sonar/build-wrapper.zip -d /opt/sonar
+          chmod +x /opt/sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64
+          curl -fsSLo /opt/sonar/sonar-scanner.zip "${SONAR_SCANNER_DOWNLOAD_URL}"
+          unzip -q /opt/sonar/sonar-scanner.zip -d /opt/sonar
+
+      - name: Build with build-wrapper
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          cd "${EXAMPLE_PATH}"
+          idf.py set-target "${IDF_TARGET}"
+          /opt/sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
+            --out-dir "${BUILD_WRAPPER_OUT_DIR}" \
+            idf.py build size
+
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            --define sonar.cfamily.compile-commands=${{ env.EXAMPLE_PATH }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
+        shell: bash
+        run: |
+          set -e
+          /opt/sonar/sonar-scanner-7.2.0.5079-linux-x64/bin/sonar-scanner \
+            --define "sonar.cfamily.compile-commands=${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json"
 
   upload_components:
     runs-on: ubuntu-latest

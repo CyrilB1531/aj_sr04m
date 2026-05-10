@@ -24,4 +24,4 @@ targets:
   - esp32s3
 
 dependencies:
-  idf: ">=5.0"
+  idf: ">=6.0"

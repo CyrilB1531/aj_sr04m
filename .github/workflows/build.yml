@@ -62,12 +62,19 @@ jobs:
           # does internally, without spawning qemu-system-xtensa or
           # idf_monitor). This avoids the TTY / TCP / buffering issues of
           # idf.py qemu monitor in a CI environment.
+          # The app .bin name follows the project() name in CMakeLists.txt,
+          # so detect it instead of hard-coding.
+          APP_BIN=$(ls -1 build/*.bin 2>/dev/null \
+                    | xargs -n1 basename \
+                    | grep -vE '^(qemu_flash|qemu_efuse)\.bin$' \
+                    | head -1)
+          echo "Detected app binary: ${APP_BIN}"
           ( cd build && esptool.py --chip=esp32 merge_bin \
               --output=qemu_flash.bin \
               --fill-flash-size=2MB \
               --flash_mode dio --flash_freq 40m --flash_size 2MB \
               0x1000 bootloader/bootloader.bin \
-              0x10000 ultrason_test.bin \
+              0x10000 "${APP_BIN}" \
               0x8000 partition_table/partition-table.bin )
 
           # Blank 1 KiB efuse image expected by qemu's nvram driver.

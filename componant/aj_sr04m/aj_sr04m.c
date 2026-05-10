@@ -80,7 +80,7 @@ aj_sr04m_dist_status_t aj_sr04m_parse_binary_frame(const uint8_t *data, int len,
   if (checksum != data[3])
     return AJ_SR04M_DIST_BAD_CHECKSUM;
 
-  int16_t mm = ((int16_t)data[1] << 8) | data[2];
+  int16_t mm = ((int16_t)data[1] << 8) | (int16_t)data[2];
   if (mm > AJ_SR04M_DIST_MAX_VALID_MM || mm < AJ_SR04M_DIST_MIN_VALID_MM)
     return AJ_SR04M_DIST_NO_ECHO;
 

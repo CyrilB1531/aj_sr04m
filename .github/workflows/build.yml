@@ -36,33 +36,47 @@ jobs:
           target: ${{ matrix.target }}
           path: ${{ matrix.path }}
           command: "idf.py build size"
-      - name: Upload compile_commands.json
+      - name: Upload build directory
         uses: actions/upload-artifact@v4
         with:
-          name: compile-commands-${{ matrix.target }}
-          path: ${{ matrix.path }}/build/compile_commands.json
+          name: build-dir-${{ matrix.target }}
+          path: ${{ matrix.path }}/build
           if-no-files-found: error
+          include-hidden-files: true
 
   sonarqube:
     needs: build
     name: SonarQube
     runs-on: ubuntu-latest
+    env:
+      EXAMPLE_PATH: componant/aj_sr04m/exemples/get_started
+      DOCKER_PREFIX: /app/${{ github.repository_owner }}/${{ github.event.repository.name }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
-      - name: Download compile_commands.json
+      - name: Download build directory
         uses: actions/download-artifact@v4
         with:
-          name: compile-commands-esp32s3
-          path: componant/aj_sr04m/exemples/get_started/build
+          name: build-dir-esp32s3
+          path: ${{ env.EXAMPLE_PATH }}/build
+      - name: Rewrite Docker paths in compile commands and response files
+        run: |
+          # esp-idf-ci-action builds in a Docker container with workspace at $DOCKER_PREFIX.
+          # On the SonarQube runner the same files are at $GITHUB_WORKSPACE -- rewrite paths
+          # so that Sonar's CFamily plugin can resolve sources and response files.
+          find "${EXAMPLE_PATH}/build" -type f \( \
+              -name compile_commands.json \
+              -o -path "*/toolchain/*flags" \
+              -o -path "*/CMakeFiles/*" \
+            \) -exec sed -i "s|${DOCKER_PREFIX}|${GITHUB_WORKSPACE}|g" {} +
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            --define sonar.cfamily.compile-commands=componant/aj_sr04m/exemples/get_started/build/compile_commands.json
+            --define sonar.cfamily.compile-commands=${{ env.EXAMPLE_PATH }}/build/compile_commands.json
 
   upload_components:
     runs-on: ubuntu-latest

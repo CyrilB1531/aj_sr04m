@@ -41,7 +41,7 @@ jobs:
           esp_idf_version: ${{ matrix.esp_idf_version }}
           target: ${{ matrix.target }}
           path: ${{ matrix.path }}
-          command: "build-wrapper-linux-x86-64 --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} idf.py build size"
+          command: "idf.py build size"
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         env:

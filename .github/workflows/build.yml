@@ -21,7 +21,7 @@ jobs:
       matrix:
         target: [esp32s3]
         esp_idf_version: [v5.0]
-        path: [componant/aj_sr04m/get_started]
+        path: [componant/aj_sr04m/exemple/get_started]
 
     steps:
       - uses: actions/checkout@v4

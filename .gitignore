@@ -57,3 +57,4 @@ build/
 sdkconfig*
 .vscode/
 !sdkconfig.defaults
+dependencies.lock

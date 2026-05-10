@@ -16,6 +16,48 @@ jobs:
           python-version: "3.12"
       - uses: pre-commit/action@v3.0.0
 
+  test:
+    runs-on: ubuntu-latest
+    needs: pre-commit
+    container:
+      image: espressif/idf:v6.0.1
+    env:
+      TEST_PATH: componant/test
+      QEMU_TARGET: esp32
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU for Xtensa
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          "${IDF_PATH}/tools/idf_tools.py" install qemu-xtensa
+
+      - name: Build test app
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          cd "${TEST_PATH}"
+          idf.py set-target "${QEMU_TARGET}"
+          idf.py build
+
+      - name: Run unit tests under QEMU
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          cd "${TEST_PATH}"
+          # idf.py qemu monitor is interactive; cap with timeout, then check
+          # the Unity summary in the captured output.
+          timeout 90s idf.py qemu --no-graphic monitor 2>&1 | tee output.log || true
+          echo "----- Unity summary -----"
+          grep -E "Tests +[0-9]+ Failures +[0-9]+ Ignored" output.log || true
+          # Fail unless Unity reports zero failures
+          grep -qE "Failures +0 " output.log
+
   build-and-scan:
     runs-on: ubuntu-latest
     needs: pre-commit
@@ -88,7 +130,7 @@ jobs:
 
   upload_components:
     runs-on: ubuntu-latest
-    needs: build-and-scan
+    needs: [build-and-scan, test]
     if: startsWith(github.event.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4

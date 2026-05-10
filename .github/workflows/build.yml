@@ -53,9 +53,38 @@ jobs:
           set -e
           . "${IDF_PATH}/export.sh"
           cd "${TEST_PATH}"
-          # idf_monitor requires a TTY on stdin. Wrap with `script` to
-          # allocate a pseudo-TTY in the CI runner (no real terminal).
-          script -q -c "timeout 180s idf.py qemu monitor" output.log || true
+          # Ensure netcat is available (used to read the QEMU TCP serial port).
+          command -v nc >/dev/null || apt-get install -y -qq netcat-openbsd
+
+          # Launch idf.py qemu detached: it generates qemu_flash.bin and
+          # spawns qemu-system-xtensa with -serial tcp::5555,server in the
+          # background. We bypass idf_monitor (which requires a TTY) and read
+          # the serial socket ourselves with nc.
+          setsid idf.py qemu > qemu-driver.log 2>&1 < /dev/null &
+          DRIVER_PID=$!
+
+          # Poll until QEMU's serial server is listening on port 5555.
+          for i in $(seq 1 30); do
+            if nc -z localhost 5555 2>/dev/null; then
+              echo "QEMU TCP serial port ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          # Capture serial output until tests finish or timeout fires.
+          timeout 180s nc localhost 5555 > output.log || true
+
+          echo "----- output.log (first 4 KiB) -----"
+          head -c 4096 output.log || true
+          echo
+          echo "----- end of preview -----"
+
+          # Cleanup any lingering driver or qemu process.
+          kill -- "-${DRIVER_PID}" 2>/dev/null || true
+          pkill -f qemu-system-xtensa 2>/dev/null || true
+
+          # Verify Unity passed and the gcov dump completed.
           echo "----- Unity summary -----"
           grep -E "Tests +[0-9]+ Failures +[0-9]+ Ignored" output.log || true
           grep -qE "Failures +0 " output.log

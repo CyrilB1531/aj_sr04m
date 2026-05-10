@@ -1,0 +1,191 @@
+name: build aj_sr04m
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pre-commit/action@v3.0.0
+
+  test:
+    runs-on: ubuntu-latest
+    needs: pre-commit
+    # IDF v5.4 because v6.0.1's kconfig.cmake includes ExternalProject in
+    # script mode, which fails with `define_property command is not scriptable`
+    # on every CMake version (3.x and 4.x).
+    container:
+      image: espressif/idf:release-v5.4
+    env:
+      TEST_PATH: componant/test
+      QEMU_TARGET: esp32
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU for Xtensa
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          "${IDF_PATH}/tools/idf_tools.py" install qemu-xtensa
+
+      - name: Build test app
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          cd "${TEST_PATH}"
+          # Coverage extraction in QEMU has no working path (apptrace needs
+          # OpenOCD over JTAG, custom UART dump trips esptool's 64 KB segment
+          # rule). DISABLE_COVERAGE keeps the binary lean and the build
+          # green. Coverage is a separate, future PR.
+          idf.py set-target "${QEMU_TARGET}"
+          idf.py -DDISABLE_COVERAGE=ON build
+
+      - name: Run tests under QEMU
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          cd "${TEST_PATH}"
+
+          # Generate qemu_flash.bin manually (replicates what idf.py qemu
+          # does internally, without spawning qemu-system-xtensa or
+          # idf_monitor). This avoids the TTY / TCP / buffering issues of
+          # idf.py qemu monitor in a CI environment.
+          # The app .bin name follows the project() name in CMakeLists.txt,
+          # so detect it instead of hard-coding.
+          APP_BIN=$(ls -1 build/*.bin 2>/dev/null \
+                    | xargs -n1 basename \
+                    | grep -vE '^(qemu_flash|qemu_efuse)\.bin$' \
+                    | head -1)
+          echo "Detected app binary: ${APP_BIN}"
+          ( cd build && esptool.py --chip=esp32 merge_bin \
+              --output=qemu_flash.bin \
+              --fill-flash-size=2MB \
+              --flash_mode dio --flash_freq 40m --flash_size 2MB \
+              0x1000 bootloader/bootloader.bin \
+              0x10000 "${APP_BIN}" \
+              0x8000 partition_table/partition-table.bin )
+
+          # Blank 1 KiB efuse image expected by qemu's nvram driver.
+          dd if=/dev/zero of=build/qemu_efuse.bin bs=1024 count=1 2>/dev/null
+
+          # Run qemu directly with serial redirected to a file. QEMU's
+          # `-serial file:` backend writes raw serial bytes to the file
+          # without buffering surprises.
+          timeout 90s qemu-system-xtensa \
+              -M esp32 -m 4M \
+              -drive file=build/qemu_flash.bin,if=mtd,format=raw \
+              -drive file=build/qemu_efuse.bin,if=none,format=raw,id=efuse \
+              -global driver=nvram.esp32.efuse,property=drive,value=efuse \
+              -global driver=timer.esp32.timg,property=wdt_disable,value=true \
+              -nic user,model=open_eth \
+              -nographic \
+              -serial file:output.log 2>qemu-stderr.log || true
+
+          echo "----- output.log tail (50 lines) -----"
+          tail -50 output.log 2>/dev/null || true
+          echo "----- qemu-stderr.log -----"
+          cat qemu-stderr.log 2>/dev/null || true
+          echo "----- end -----"
+
+          # Verify Unity passed and reached the end-of-test sentinel.
+          echo "----- Unity summary -----"
+          grep -E "Tests +[0-9]+ Failures +[0-9]+ Ignored" output.log || true
+          grep -qE "Failures +0 " output.log
+          grep -q "=== TESTS_DONE ===" output.log
+
+  build-and-scan:
+    runs-on: ubuntu-latest
+    needs: [pre-commit, test]
+    container:
+      image: espressif/idf:v6.0.1
+    env:
+      EXAMPLE_PATH: componant/aj_sr04m/exemples/get_started
+      BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
+      IDF_TARGET: esp32s3
+      BUILD_WRAPPER_DOWNLOAD_URL: https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+      SONAR_SCANNER_DOWNLOAD_URL: https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.2.0.5079-linux-x64.zip
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
+
+      - name: Install Sonar tooling
+        run: |
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends curl unzip
+          mkdir -p /opt/sonar
+          curl -fsSLo /opt/sonar/build-wrapper.zip "${BUILD_WRAPPER_DOWNLOAD_URL}"
+          unzip -q /opt/sonar/build-wrapper.zip -d /opt/sonar
+          chmod +x /opt/sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64
+          curl -fsSLo /opt/sonar/sonar-scanner.zip "${SONAR_SCANNER_DOWNLOAD_URL}"
+          unzip -q /opt/sonar/sonar-scanner.zip -d /opt/sonar
+
+      - name: Build with build-wrapper
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          cd "${EXAMPLE_PATH}"
+          idf.py set-target "${IDF_TARGET}"
+          /opt/sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
+            --out-dir "${BUILD_WRAPPER_OUT_DIR}" \
+            idf.py build size
+
+      - name: Filter compile_commands.json to C-only
+        shell: bash
+        run: |
+          set -e
+          JSON="${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json"
+          python3 - "$JSON" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          with open(path) as f:
+              data = json.load(f)
+          # Drop C++ entries -- SonarCloud CFamily 6.80 chokes on -std=gnu++26
+          # used by some IDF components (mbedtls etc.). The aj_sr04m project
+          # itself is pure C, so we lose nothing.
+          c_only = [e for e in data if e.get('file', '').endswith('.c')]
+          with open(path, 'w') as f:
+              json.dump(c_only, f)
+          print(f"Filtered compile_commands.json: kept {len(c_only)}/{len(data)} C entries")
+          PY
+
+      - name: SonarQube Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          /opt/sonar/sonar-scanner-7.2.0.5079-linux-x64/bin/sonar-scanner \
+            --define "sonar.cfamily.compile-commands=${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json" \
+            --define "sonar.cpp.file.suffixes=-" \
+            --define "sonar.objc.file.suffixes=-"
+
+  upload_components:
+    runs-on: ubuntu-latest
+    needs: [build-and-scan, test]
+    if: startsWith(github.event.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload component to the component registry
+        uses: espressif/upload-components-ci-action@v2
+        with:
+          components: "aj_sr04m"
+          version: ${{ github.ref_name }}
+          namespace: "CyrilB1531"
+          api_token: ${{ secrets.TOKEN_GIT_TO_REGISTRY}}
+          directories: components

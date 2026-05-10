@@ -27,10 +27,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
       - name: esp-idf build
@@ -40,19 +36,33 @@ jobs:
           target: ${{ matrix.target }}
           path: ${{ matrix.path }}
           command: "idf.py build size"
+      - name: Upload compile_commands.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-commands-${{ matrix.target }}
+          path: ${{ matrix.path }}/build/compile_commands.json
+          if-no-files-found: error
 
   sonarqube:
     needs: build
     name: SonarQube
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
+      - name: Download compile_commands.json
+        uses: actions/download-artifact@v4
+        with:
+          name: compile-commands-esp32s3
+          path: componant/aj_sr04m/exemples/get_started/build
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            --define sonar.cfamily.compile-commands=componant/aj_sr04m/exemples/get_started/build/compile_commands.json
 
   upload_components:
     runs-on: ubuntu-latest

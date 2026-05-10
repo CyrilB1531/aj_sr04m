@@ -56,6 +56,25 @@ jobs:
             --out-dir "${BUILD_WRAPPER_OUT_DIR}" \
             idf.py build size
 
+      - name: Filter compile_commands.json to C-only
+        shell: bash
+        run: |
+          set -e
+          JSON="${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json"
+          python3 - "$JSON" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          with open(path) as f:
+              data = json.load(f)
+          # Drop C++ entries -- SonarCloud CFamily 6.80 chokes on -std=gnu++26
+          # used by some IDF components (mbedtls etc.). The aj_sr04m project
+          # itself is pure C, so we lose nothing.
+          c_only = [e for e in data if e.get('file', '').endswith('.c')]
+          with open(path, 'w') as f:
+              json.dump(c_only, f)
+          print(f"Filtered compile_commands.json: kept {len(c_only)}/{len(data)} C entries")
+          PY
+
       - name: SonarQube Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -63,7 +82,9 @@ jobs:
         run: |
           set -e
           /opt/sonar/sonar-scanner-7.2.0.5079-linux-x64/bin/sonar-scanner \
-            --define "sonar.cfamily.compile-commands=${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json"
+            --define "sonar.cfamily.compile-commands=${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json" \
+            --define "sonar.cpp.file.suffixes=-" \
+            --define "sonar.objc.file.suffixes=-"
 
   upload_components:
     runs-on: ubuntu-latest

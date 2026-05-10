@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+#
+# SPDX-License-Identifier: MIT
+#
+# Defaults applied on top of esp-idf base config for the test runner.
+# Optimize for size — keeps DRAM headroom for the gcov counters that
+# --coverage adds to aj_sr04m and aj_sr04m_test.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y

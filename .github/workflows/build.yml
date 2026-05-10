@@ -38,16 +38,20 @@ jobs:
           . "${IDF_PATH}/export.sh"
           "${IDF_PATH}/tools/idf_tools.py" install qemu-xtensa
 
-      - name: Build test app with coverage instrumentation
+      - name: Build test app
         shell: bash
         run: |
           set -e
           . "${IDF_PATH}/export.sh"
           cd "${TEST_PATH}"
+          # Coverage extraction in QEMU has no working path (apptrace needs
+          # OpenOCD over JTAG, custom UART dump trips esptool's 64 KB segment
+          # rule). DISABLE_COVERAGE keeps the binary lean and the build
+          # green. Coverage is a separate, future PR.
           idf.py set-target "${QEMU_TARGET}"
-          idf.py build
+          idf.py -DDISABLE_COVERAGE=ON build
 
-      - name: Run tests under QEMU and capture gcov dump
+      - name: Run tests under QEMU
         shell: bash
         run: |
           set -e
@@ -72,7 +76,7 @@ jobs:
           # Run qemu directly with serial redirected to a file. QEMU's
           # `-serial file:` backend writes raw serial bytes to the file
           # without buffering surprises.
-          timeout 180s qemu-system-xtensa \
+          timeout 90s qemu-system-xtensa \
               -M esp32 -m 4M \
               -drive file=build/qemu_flash.bin,if=mtd,format=raw \
               -drive file=build/qemu_efuse.bin,if=none,format=raw,id=efuse \
@@ -82,70 +86,17 @@ jobs:
               -nographic \
               -serial file:output.log 2>qemu-stderr.log || true
 
-          echo "----- output.log size -----"
-          wc -l output.log 2>/dev/null || echo "output.log not created"
-          echo "----- output.log head (200 lines) -----"
-          head -200 output.log 2>/dev/null || true
           echo "----- output.log tail (50 lines) -----"
           tail -50 output.log 2>/dev/null || true
           echo "----- qemu-stderr.log -----"
           cat qemu-stderr.log 2>/dev/null || true
           echo "----- end -----"
 
-          # Verify Unity passed and the gcov dump completed.
+          # Verify Unity passed and reached the end-of-test sentinel.
           echo "----- Unity summary -----"
           grep -E "Tests +[0-9]+ Failures +[0-9]+ Ignored" output.log || true
           grep -qE "Failures +0 " output.log
-          grep -q "=== TESTS_AND_GCOV_DONE ===" output.log
-
-      - name: Recover .gcda files from UART output
-        shell: bash
-        run: |
-          set -e
-          cd "${TEST_PATH}"
-          python3 - <<'PY'
-          import re, os
-          with open('output.log') as f:
-              log = f.read()
-          # Marker pairs emitted by main_test.c around hex-encoded .gcda bytes
-          pat = re.compile(r'--GCDA-START (.+?)--\n([0-9a-f\s]+?)\n--GCDA-END--', re.DOTALL)
-          count = 0
-          for m in pat.finditer(log):
-              fn = m.group(1).strip()
-              hex_data = re.sub(r'[^0-9a-f]', '', m.group(2))
-              binary = bytes.fromhex(hex_data)
-              d = os.path.dirname(fn)
-              if d:
-                  os.makedirs(d, exist_ok=True)
-              with open(fn, 'wb') as f:
-                  f.write(binary)
-              count += 1
-          print(f"Recovered {count} .gcda files")
-          PY
-
-      - name: Run gcov to produce .gcov reports
-        shell: bash
-        run: |
-          set -e
-          . "${IDF_PATH}/export.sh"
-          cd "${TEST_PATH}"
-          mkdir -p gcov-reports
-          GCOV=$(command -v xtensa-esp-elf-gcov || command -v xtensa-esp32-elf-gcov || echo gcov)
-          echo "Using gcov: $GCOV"
-          find build -name '*.gcno' -print0 | while IFS= read -r -d '' gcno; do
-            dir=$(dirname "$gcno")
-            base=$(basename "$gcno" .gcno)
-            (cd "$dir" && "$GCOV" -b -c "$base.gcno" 2>/dev/null || true)
-          done
-          find build -name '*.gcov' -exec cp {} gcov-reports/ \;
-          echo "Collected $(ls gcov-reports/ | wc -l) .gcov files"
-
-      - name: Upload gcov reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: gcov-reports
-          path: ${{ env.TEST_PATH }}/gcov-reports/
-          if-no-files-found: warn
+          grep -q "=== TESTS_DONE ===" output.log
 
   build-and-scan:
     runs-on: ubuntu-latest
@@ -206,12 +157,6 @@ jobs:
           print(f"Filtered compile_commands.json: kept {len(c_only)}/{len(data)} C entries")
           PY
 
-      - name: Download gcov reports from test job
-        uses: actions/download-artifact@v4
-        with:
-          name: gcov-reports
-          path: gcov-reports
-
       - name: SonarQube Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -220,7 +165,6 @@ jobs:
           set -e
           /opt/sonar/sonar-scanner-7.2.0.5079-linux-x64/bin/sonar-scanner \
             --define "sonar.cfamily.compile-commands=${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json" \
-            --define "sonar.cfamily.gcov.reportsPath=gcov-reports" \
             --define "sonar.cpp.file.suffixes=-" \
             --define "sonar.objc.file.suffixes=-"
 

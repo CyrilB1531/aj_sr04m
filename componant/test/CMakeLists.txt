@@ -15,7 +15,7 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # "Trim" the build. Include the minimal set of components, main, and anything it depends on.
 idf_build_set_property(MINIMAL_BUILD ON)
 option(DISABLE_COVERAGE "Skip --coverage instrumentation on aj_sr04m" OFF)
-project(ultrason_test)
+project(aj_sr04m_test)
 
 # Coverage instrumentation: gcov emits .gcno files at build time and adds .bss
 # counters that the runtime updates; the CI reconstructs .gcda from a UART dump

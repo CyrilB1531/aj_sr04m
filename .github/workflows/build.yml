@@ -71,6 +71,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: build-artifacts-esp32s3
+          path: ${{ env.EXAMPLE_PATH }}
       - name: Rewrite Docker paths in build artifacts
         run: |
           # esp-idf-ci-action builds in a Docker container with workspace at $DOCKER_PREFIX.

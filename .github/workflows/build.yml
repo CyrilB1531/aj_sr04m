@@ -89,7 +89,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            --define sonar.cfamily.build-wrapper-output=${{ env.EXAMPLE_PATH }}/${{ env.BUILD_WRAPPER_OUT_DIR }}
+            --define sonar.cfamily.compile-commands=${{ env.EXAMPLE_PATH }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
 
   upload_components:
     runs-on: ubuntu-latest

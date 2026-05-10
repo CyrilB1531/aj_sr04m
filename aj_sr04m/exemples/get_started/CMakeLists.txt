@@ -1,2 +1,5 @@
-idf_component_register(SRCS "main.c"
-  PRIV_REQUIRES log aj_sr04m)
+cmake_minimum_required(VERSION 3.16)
+
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+project(get_started)

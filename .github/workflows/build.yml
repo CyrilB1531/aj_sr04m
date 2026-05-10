@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         target: [esp32s3]
-        esp_idf_version: [v5.0.0]
+        esp_idf_version: [v5.0]
         path: [componant/aj_sr04m/get_started]
 
     steps:

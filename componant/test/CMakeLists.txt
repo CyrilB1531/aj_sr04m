@@ -25,7 +25,11 @@ project(ultrason_test)
 if(NOT DISABLE_COVERAGE)
   foreach(target aj_sr04m aj_sr04m_test)
     idf_component_get_property(lib ${target} COMPONENT_LIB)
-    target_compile_options(${lib} PRIVATE --coverage)
+    # -fprofile-info-section emits a .gcov_info section per TU instead of the
+    # legacy .ctors-based registration. main_test.c walks that table via
+    # __gcov_info_to_gcda(), which only exists in the modern gcov runtime.
+    target_compile_options(${lib} PRIVATE --coverage -fprofile-info-section
+                                          -fno-merge-constants)
     target_link_libraries(${lib} INTERFACE --coverage)
   endforeach()
 endif()

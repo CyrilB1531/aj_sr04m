@@ -6,3 +6,7 @@
 # Optimize for size — keeps DRAM headroom for the gcov counters that
 # --coverage adds to aj_sr04m and aj_sr04m_test.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# __gcov_info_to_gcda + libgcov internals call printf with deep formatter stack
+# usage; the default 3584 B main stack overflows during dump_all_gcov.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

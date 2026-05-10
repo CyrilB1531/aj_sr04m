@@ -53,7 +53,7 @@ jobs:
           set -e
           . "${IDF_PATH}/export.sh"
           cd "${TEST_PATH}"
-          timeout 180s idf.py qemu --no-graphic monitor 2>&1 | tee output.log || true
+          timeout 180s idf.py qemu --no-graphics monitor 2>&1 | tee output.log || true
           echo "----- Unity summary -----"
           grep -E "Tests +[0-9]+ Failures +[0-9]+ Ignored" output.log || true
           grep -qE "Failures +0 " output.log

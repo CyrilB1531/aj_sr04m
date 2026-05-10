@@ -1,0 +1,4 @@
+## IDF Component Manager Manifest File
+dependencies:
+  aj_sr04m/componant:
+    override_path: "../../../"

@@ -5,11 +5,7 @@ version: "0.0.1"
 
 description: "ESP-IDF driver for the AJ-SR04M waterproof ultrasonic distance sensor (modes 1-5: GPIO trigger/echo and UART)."
 
-license: "MIT"
-
 url: "https://github.com/CyrilB1531/aj_sr04m"
-repository: "https://github.com/CyrilB1531/aj_sr04m.git"
-issues: "https://github.com/CyrilB1531/aj_sr04m/issues"
 
 maintainers:
   - "Cyril Brunet"

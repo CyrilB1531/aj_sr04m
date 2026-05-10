@@ -28,6 +28,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Downgrade CMake to 3.30 (IDF v6.0.1 + CMake 4.0 are incompatible in script mode)
+        shell: bash
+        run: |
+          set -e
+          CMAKE_VERSION=3.30.5
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends curl
+          curl -fsSLO "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz"
+          tar xzf "cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" -C /opt
+          rm "cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz"
+          # Replace the IDF-bundled CMake 4.0.3 binary with the 3.30 one
+          # (PATH manipulation alone is bypassed by `. export.sh`).
+          IDF_CMAKE_DIR="/opt/esp/tools/cmake/4.0.3/bin"
+          if [ -e "${IDF_CMAKE_DIR}/cmake" ]; then
+            mv "${IDF_CMAKE_DIR}/cmake" "${IDF_CMAKE_DIR}/cmake.bak"
+            ln -sf "/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/cmake" "${IDF_CMAKE_DIR}/cmake"
+          fi
+          cmake --version
+
       - name: Install QEMU for Xtensa
         shell: bash
         run: |

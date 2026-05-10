@@ -1,5 +1,8 @@
-# The following lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
+# Build with ESP-IDF v5.4.3:
+#   source ~/esp/v5.4.3/esp-idf/export.sh
+#   idf.py build && idf.py qemu
+# v6.0.1 enforces --orphan-handling=error and rejects gcov.ld; v5.4.3 tolerates
+# the orphan placement so the link succeeds.
 cmake_minimum_required(VERSION 3.16)
 
 # Paths to components that will be built in the test_app.

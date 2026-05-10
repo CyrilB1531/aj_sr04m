@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 # aj_sr04m — ESP-IDF driver for the AJ-SR04M ultrasonic sensor
 
-ESP-IDF v6.0+ component for the AJ-SR04M waterproof ultrasonic distance sensor. All five operating modes selected by the R19 resistor on the module are supported.
+ESP-IDF v5.4+ component for the AJ-SR04M waterproof ultrasonic distance sensor. All five operating modes selected by the R19 resistor on the module are supported.
 
 > **Compatibility with JSN-SR04T**: only **mode 1** (HC-SR04 trigger/echo) is fully compatible as-is. The JSN-SR04T uses **R27** (not R19) to select modes, only documents **3 modes** in its datasheet, and uses **0x55** as the UART trigger byte (not 0x01). For UART modes on a JSN-SR04T, the trigger byte and frame layout in this driver need adjustments.
 

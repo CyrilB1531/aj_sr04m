@@ -54,7 +54,10 @@ jobs:
           . "${IDF_PATH}/export.sh"
           cd "${TEST_PATH}"
           # Ensure netcat is available (used to read the QEMU TCP serial port).
-          command -v nc >/dev/null || apt-get install -y -qq netcat-openbsd
+          if ! command -v nc >/dev/null; then
+            apt-get update -qq
+            apt-get install -y -qq netcat-openbsd
+          fi
 
           # Launch idf.py qemu detached: it generates qemu_flash.bin and
           # spawns qemu-system-xtensa with -serial tcp::5555,server in the

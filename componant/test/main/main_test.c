@@ -41,8 +41,14 @@ static void *gcov_alloc(unsigned size, void *arg) {
  * markers and reconstructs the .gcda files alongside the matching .gcno. */
 static void dump_all_gcov(void) {
   fflush(stdout);
+  const size_t count = (size_t)(__gcov_info_end - __gcov_info_start);
+  printf("\n--GCOV-TABLE start=%p end=%p count=%zu--\n",
+         (const void *)__gcov_info_start, (const void *)__gcov_info_end, count);
   for (const struct gcov_info *const *info = __gcov_info_start;
        info < __gcov_info_end; info++) {
+    if (*info == NULL) {
+      continue;
+    }
     __gcov_info_to_gcda(*info, gcov_filename, gcov_dump, gcov_alloc, NULL);
     printf("\n--GCDA-END--\n");
   }

@@ -53,39 +53,44 @@ jobs:
           set -e
           . "${IDF_PATH}/export.sh"
           cd "${TEST_PATH}"
-          # Ensure netcat is available (used to read the QEMU TCP serial port).
-          if ! command -v nc >/dev/null; then
-            apt-get update -qq
-            apt-get install -y -qq netcat-openbsd
-          fi
 
-          # Launch idf.py qemu detached: it generates qemu_flash.bin and
-          # spawns qemu-system-xtensa with -serial tcp::5555,server in the
-          # background. We bypass idf_monitor (which requires a TTY) and read
-          # the serial socket ourselves with nc.
-          setsid idf.py qemu > qemu-driver.log 2>&1 < /dev/null &
-          DRIVER_PID=$!
+          # Generate qemu_flash.bin manually (replicates what idf.py qemu
+          # does internally, without spawning qemu-system-xtensa or
+          # idf_monitor). This avoids the TTY / TCP / buffering issues of
+          # idf.py qemu monitor in a CI environment.
+          ( cd build && esptool.py --chip=esp32 merge_bin \
+              --output=qemu_flash.bin \
+              --fill-flash-size=2MB \
+              --flash_mode dio --flash_freq 40m --flash_size 2MB \
+              0x1000 bootloader/bootloader.bin \
+              0x10000 ultrason_test.bin \
+              0x8000 partition_table/partition-table.bin )
 
-          # Poll until QEMU's serial server is listening on port 5555.
-          for i in $(seq 1 30); do
-            if nc -z localhost 5555 2>/dev/null; then
-              echo "QEMU TCP serial port ready after ${i}s"
-              break
-            fi
-            sleep 1
-          done
+          # Blank 1 KiB efuse image expected by qemu's nvram driver.
+          dd if=/dev/zero of=build/qemu_efuse.bin bs=1024 count=1 2>/dev/null
 
-          # Capture serial output until tests finish or timeout fires.
-          timeout 180s nc localhost 5555 > output.log || true
+          # Run qemu directly with serial redirected to a file. QEMU's
+          # `-serial file:` backend writes raw serial bytes to the file
+          # without buffering surprises.
+          timeout 180s qemu-system-xtensa \
+              -M esp32 -m 4M \
+              -drive file=build/qemu_flash.bin,if=mtd,format=raw \
+              -drive file=build/qemu_efuse.bin,if=none,format=raw,id=efuse \
+              -global driver=nvram.esp32.efuse,property=drive,value=efuse \
+              -global driver=timer.esp32.timg,property=wdt_disable,value=true \
+              -nic user,model=open_eth \
+              -nographic \
+              -serial file:output.log 2>qemu-stderr.log || true
 
-          echo "----- output.log (first 4 KiB) -----"
-          head -c 4096 output.log || true
-          echo
-          echo "----- end of preview -----"
-
-          # Cleanup any lingering driver or qemu process.
-          kill -- "-${DRIVER_PID}" 2>/dev/null || true
-          pkill -f qemu-system-xtensa 2>/dev/null || true
+          echo "----- output.log size -----"
+          wc -l output.log 2>/dev/null || echo "output.log not created"
+          echo "----- output.log head (200 lines) -----"
+          head -200 output.log 2>/dev/null || true
+          echo "----- output.log tail (50 lines) -----"
+          tail -50 output.log 2>/dev/null || true
+          echo "----- qemu-stderr.log -----"
+          cat qemu-stderr.log 2>/dev/null || true
+          echo "----- end -----"
 
           # Verify Unity passed and the gcov dump completed.
           echo "----- Unity summary -----"

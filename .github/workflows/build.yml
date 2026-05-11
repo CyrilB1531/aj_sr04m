@@ -229,19 +229,27 @@ jobs:
               && find ../../build -name "*.gcno" -print0 \
                  | xargs -0 -I{} gcov -p -b -c "{}" >/dev/null || true )
 
+            # lcov 2.x rejects Unity's TEST_CASE expansion as a
+            # "mismatched end line" because the macro spans multiple
+            # GCC line tags pointing at the same source line. The
+            # ignore-errors flag downgrades it to a warning; tests
+            # files themselves are excluded from the report anyway.
             lcov --capture --directory build \
                  --output-file "coverage.${TAG}.info" \
                  --base-directory "$(pwd)/../.." \
-                 --rc lcov_branch_coverage=1
+                 --rc lcov_branch_coverage=1 \
+                 --ignore-errors mismatch,gcov,source
             lcov --extract "coverage.${TAG}.info" "*/aj_sr04m/src/*" \
-                 --output-file "coverage.${TAG}.info"
+                 --output-file "coverage.${TAG}.info" \
+                 --ignore-errors empty,unused
           done
 
           # Combined lcov.info across every run — handy as a single
           # downloadable artifact for humans (matches what Codecov-style
           # tools expect). Sonar still reads per-run gcov dirs below.
           lcov $(for f in coverage.*.info; do printf -- "-a %s " "$f"; done) \
-               --output-file coverage.info
+               --output-file coverage.info \
+               --ignore-errors empty,inconsistent
           lcov --list coverage.info
 
       - name: Filter compile_commands.json to C-only

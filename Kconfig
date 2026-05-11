@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+#
+# SPDX-License-Identifier: MIT
+
+menu "AJ-SR04M Configuration"
+
+    orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
+
+    choice
+        prompt "Sensor variant"
+        default AJ_SR04M_VARIANT_AJ_SR04M
+        help
+            Select the actual hardware module. The variant determines
+            the UART trigger byte used in modes 4 and 5:
+              - AJ-SR04M: 0x01
+              - JSN-SR04T: 0x55
+            Mode 1 (HC-SR04 trigger/echo) behaves identically on both;
+            modes 3-5 may have additional protocol differences -- consult
+            your module datasheet.
+
+        config AJ_SR04M_VARIANT_AJ_SR04M
+            bool "AJ-SR04M (trigger byte 0x01)"
+        config AJ_SR04M_VARIANT_JSN_SR04T
+            bool "JSN-SR04T (trigger byte 0x55)"
+    endchoice
+
+    config AJ_SR04M_TRIGGER_BYTE
+        hex
+        default 0x01 if AJ_SR04M_VARIANT_AJ_SR04M
+        default 0x55 if AJ_SR04M_VARIANT_JSN_SR04T
+
+    choice
+        prompt "Sensor operating mode"
+        default AJ_SR04M_MODE_1
+        help
+            Operating mode of the AJ-SR04M / JSN-SR04T-2.0/3.0 ultrasonic sensor.
+            The mode is selected by the R19 resistor on the module itself
+            and must match this firmware setting.
+
+        config AJ_SR04M_MODE_1
+            bool "Mode 1: GPIO trigger/echo (10-15 us pulse)"
+        config AJ_SR04M_MODE_2
+            bool "Mode 2: GPIO trigger/echo (1100 us pulse, low-power GPIO)"
+        config AJ_SR04M_MODE_3
+            bool "Mode 3: UART autonomous (binary frame every ~100 ms)"
+        config AJ_SR04M_MODE_4
+            bool "Mode 4: UART low-power (binary frame after trigger byte)"
+        config AJ_SR04M_MODE_5
+            bool "Mode 5: UART low-power (ASCII frame after trigger byte)"
+    endchoice
+
+    config AJ_SR04M_MODE
+        int
+        default 1 if AJ_SR04M_MODE_1
+        default 2 if AJ_SR04M_MODE_2
+        default 3 if AJ_SR04M_MODE_3
+        default 4 if AJ_SR04M_MODE_4
+        default 5 if AJ_SR04M_MODE_5
+
+    config AJ_SR04M_TRIGGER_PIN
+        int "Trigger / UART TX GPIO"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+        default 17
+        help
+            GPIO connected to the module TRIG pin (modes 1 and 2) or to the
+            module UART RX pin (modes 3, 4 and 5). Must be output-capable.
+
+    config AJ_SR04M_ECHO_PIN
+        int "Echo / UART RX GPIO"
+        range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+        default 16
+        help
+            GPIO connected to the module ECHO pin (modes 1 and 2) or to the
+            module UART TX pin (modes 3, 4 and 5). Input-only pins
+            (e.g. GPIO 34-39 on classic ESP32) are valid here.
+
+    config AJ_SR04M_UART_NUM
+        int "UART port number"
+        range 0 2 if IDF_TARGET_ESP32 || IDF_TARGET_ESP32S3
+        default 2 if IDF_TARGET_ESP32 || IDF_TARGET_ESP32S3
+        range 0 1
+        default 1
+        depends on AJ_SR04M_MODE_3 || AJ_SR04M_MODE_4 || AJ_SR04M_MODE_5
+        help
+            UART port used to communicate with the sensor in modes 3, 4 and 5.
+            UART0 is typically the console -- avoid using it.
+
+endmenu

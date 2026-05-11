@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+# SPDX-License-Identifier: MIT
+name: Bug Report
+description: Something is wrong with the aj_sr04m driver
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: aj_sr04m version
+      description: From `idf_component.yml` or `git describe`.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: idf-version
+    attributes:
+      label: ESP-IDF version
+      description: Output of `idf.py --version`.
+      placeholder: e.g. v5.4.3
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Chip target
+      options:
+        - esp32
+        - esp32s3
+        - linux (host simulator)
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Sensor mode
+      description: Selected via `idf.py menuconfig` → AJ-SR04M Configuration → Mode.
+      options:
+        - "1 — GPIO trigger + GPIO echo"
+        - "2 — GPIO trigger + GPIO echo (low-power)"
+        - "3 — UART autonomous"
+        - "4 — UART binary frame"
+        - "5 — UART ASCII frame"
+    validations:
+      required: true
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Sensor variant
+      options:
+        - AJ-SR04M
+        - JSN-SR04T
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug — what you observed vs. what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Minimal code or `menuconfig` settings that reproduce the bug. Logs welcome.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware setup
+      description: Wiring (TRIG/ECHO pins, level shifter, supply voltage), and any non-default sensor revision details.
+    validations:
+      required: false

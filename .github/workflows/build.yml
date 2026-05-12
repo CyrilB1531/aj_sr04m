@@ -224,10 +224,21 @@ jobs:
             grep -qE "Failures +0 " "output.${TAG}.log"
             grep -q "=== TESTS_DONE ===" "output.${TAG}.log"
 
-            mkdir -p "gcov-reports/${TAG}"
+            # Generate .gcov files into a per-run dir first, then copy
+            # them into the flat gcov-flat/ dir with a TAG prefix so
+            # multiple runs for the same source don't overwrite each
+            # other. SonarCloud's CFamily gcov sensor reads a SINGLE
+            # directory and aggregates execution counts across every
+            # .gcov it finds in it.
+            mkdir -p "gcov-reports/${TAG}" gcov-flat
             ( cd "gcov-reports/${TAG}" \
               && find ../../build -name "*.gcno" -print0 \
                  | xargs -0 -I{} gcov -p -b -c "{}" >/dev/null || true )
+            for f in "gcov-reports/${TAG}"/*.gcov; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f")
+              cp "$f" "gcov-flat/${TAG}.${base}"
+            done
 
             # lcov 2.x rejects Unity's TEST_CASE expansion as a
             # "mismatched end line" because the macro spans multiple
@@ -246,7 +257,7 @@ jobs:
 
           # Combined lcov.info across every run — handy as a single
           # downloadable artifact for humans (matches what Codecov-style
-          # tools expect). Sonar still reads per-run gcov dirs below.
+          # tools expect). Sonar reads gcov-flat/ below.
           lcov $(for f in coverage.*.info; do printf -- "-a %s " "$f"; done) \
                --output-file coverage.info \
                --ignore-errors empty,inconsistent
@@ -271,17 +282,6 @@ jobs:
           print(f"Filtered compile_commands.json: kept {len(c_only)}/{len(data)} C entries")
           PY
 
-      - name: Build gcov reportsPath list
-        # Comma-separated list of every per-run gcov dir under
-        # tests/linux/gcov-reports/, fed to sonar.cfamily.gcov.reportsPath.
-        shell: bash
-        id: gcov_paths
-        run: |
-          set -e
-          paths=$(find "${TEST_PATH}/gcov-reports" -mindepth 1 -maxdepth 1 -type d \
-                  | sort | paste -sd, -)
-          echo "paths=${paths}" >> "$GITHUB_OUTPUT"
-
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         env:
@@ -289,7 +289,7 @@ jobs:
         with:
           args: >
             --define sonar.cfamily.compile-commands=${{ env.TEST_PATH }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
-            --define sonar.cfamily.gcov.reportsPath=${{ steps.gcov_paths.outputs.paths }}
+            --define sonar.cfamily.gcov.reportsPath=${{ env.TEST_PATH }}/gcov-flat
             --define sonar.cpp.file.suffixes=-
             --define sonar.objc.file.suffixes=-
 
@@ -300,7 +300,7 @@ jobs:
           path: |
             ${{ env.TEST_PATH }}/coverage.info
             ${{ env.TEST_PATH }}/coverage.*.info
-            ${{ env.TEST_PATH }}/gcov-reports/
+            ${{ env.TEST_PATH }}/gcov-flat/
 
   upload_components:
     runs-on: ubuntu-latest

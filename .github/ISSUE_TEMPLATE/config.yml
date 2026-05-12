@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+# SPDX-License-Identifier: MIT
+blank_issues_enabled: false
+contact_links:
+  - name: ESP-IDF Component Registry
+    url: https://components.espressif.com/components/cyrilb1531/aj_sr04m
+    about: Browse versions, dependencies and integration docs for this component.
+  - name: ESP-IDF Documentation
+    url: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/
+    about: For ESP-IDF setup, target boards, or general IDF questions.

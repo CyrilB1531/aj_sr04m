@@ -1,10 +1,13 @@
 name: build aj_sr04m
 
 on:
-  pull_request:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
   pre-commit:
@@ -16,17 +19,66 @@ jobs:
           python-version: "3.12"
       - uses: pre-commit/action@v3.0.0
 
-  test:
+  build-component:
+    name: Build src/ via example (IDF ${{ matrix.idf_version }}, ${{ matrix.idf_target }})
     runs-on: ubuntu-latest
     needs: pre-commit
-    # IDF v5.4 because v6.0.1's kconfig.cmake includes ExternalProject in
-    # script mode, which fails with `define_property command is not scriptable`
-    # on every CMake version (3.x and 4.x).
+    strategy:
+      fail-fast: false
+      matrix:
+        idf_version: ["v5.4.3", "v6.0.1"]
+        idf_target: ["esp32", "esp32s3"]
     container:
-      image: espressif/idf:release-v5.4
+      image: espressif/idf:${{ matrix.idf_version }}
     env:
-      TEST_PATH: componant/test
+      EXAMPLE_PATH: examples/aj_sr04m_example
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build example
+        # Exercises src/ as a transitive dependency of the example. This
+        # validates that the component compiles cleanly against each
+        # supported IDF release on every chip target in idf_component.yml.
+        shell: bash
+        run: |
+          set -e
+          . "${IDF_PATH}/export.sh"
+          cd "${EXAMPLE_PATH}"
+          idf.py set-target "${{ matrix.idf_target }}"
+          idf.py build size
+
+  test:
+    name: QEMU tests (IDF ${{ matrix.idf_version }}, mode ${{ matrix.mode }}, ${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    needs: pre-commit
+    strategy:
+      fail-fast: false
+      matrix:
+        idf_version: ["v5.4.3", "v6.0.1"]
+        mode: ["1", "2", "3", "4", "5"]
+        variant: ["aj_sr04m"]
+        # The variant flag only affects modes 4 and 5 (UART trigger byte
+        # — 0x01 for AJ-SR04M vs 0x55 for JSN-SR04T). Add JSN-SR04T runs
+        # for those two modes; the other modes get nothing new from
+        # running the same code twice.
+        include:
+          - idf_version: "v5.4.3"
+            mode: "4"
+            variant: "jsn_sr04t"
+          - idf_version: "v5.4.3"
+            mode: "5"
+            variant: "jsn_sr04t"
+          - idf_version: "v6.0.1"
+            mode: "4"
+            variant: "jsn_sr04t"
+          - idf_version: "v6.0.1"
+            mode: "5"
+            variant: "jsn_sr04t"
+    container:
+      image: espressif/idf:${{ matrix.idf_version }}
+    env:
+      TEST_PATH: tests/qemu
       QEMU_TARGET: esp32
+      SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.defaults.mode${{ matrix.mode }}${{ matrix.variant == 'jsn_sr04t' && ';sdkconfig.defaults.jsn_sr04t' || '' }}"
 
     steps:
       - uses: actions/checkout@v4
@@ -44,12 +96,12 @@ jobs:
           set -e
           . "${IDF_PATH}/export.sh"
           cd "${TEST_PATH}"
-          # Coverage extraction in QEMU has no working path (apptrace needs
-          # OpenOCD over JTAG, custom UART dump trips esptool's 64 KB segment
-          # rule). DISABLE_COVERAGE keeps the binary lean and the build
-          # green. Coverage is a separate, future PR.
+          # Coverage is collected by the separate linux-test job (gcov on
+          # the POSIX simulator); the QEMU build only validates Unity
+          # results on the ESP32 target. SDKCONFIG_DEFAULTS (set per-job)
+          # selects which sensor mode this run exercises.
           idf.py set-target "${QEMU_TARGET}"
-          idf.py -DDISABLE_COVERAGE=ON build
+          idf.py build
 
       - name: Run tests under QEMU
         shell: bash
@@ -105,59 +157,127 @@ jobs:
           grep -qE "Failures +0 " output.log
           grep -q "=== TESTS_DONE ===" output.log
 
-  build-and-scan:
+  linux-test:
+    name: Linux test + coverage + SonarQube scan
     runs-on: ubuntu-latest
-    needs: [pre-commit, test]
+    needs: pre-commit
     container:
-      image: espressif/idf:v6.0.1
+      image: espressif/idf:v5.4.3
     env:
-      EXAMPLE_PATH: componant/aj_sr04m/exemples/get_started
+      TEST_PATH: tests/linux
       BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory
-      IDF_TARGET: esp32s3
-      BUILD_WRAPPER_DOWNLOAD_URL: https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
-      SONAR_SCANNER_DOWNLOAD_URL: https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-7.2.0.5079-linux-x64.zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
+          fetch-depth: 0 # Sonar needs full history for blame/relevancy.
 
-      - name: Install Sonar tooling
+      - name: Install host deps
+        # libbsd-dev: ESP-IDF's linux target ports include <bsd/sys/cdefs.h>
+        # via components/linux/include/sys/cdefs.h.
+        # lcov: the human-readable coverage summary.
+        shell: bash
         run: |
           set -e
           apt-get update -qq
-          apt-get install -y -qq --no-install-recommends curl unzip
-          mkdir -p /opt/sonar
-          curl -fsSLo /opt/sonar/build-wrapper.zip "${BUILD_WRAPPER_DOWNLOAD_URL}"
-          unzip -q /opt/sonar/build-wrapper.zip -d /opt/sonar
-          chmod +x /opt/sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64
-          curl -fsSLo /opt/sonar/sonar-scanner.zip "${SONAR_SCANNER_DOWNLOAD_URL}"
-          unzip -q /opt/sonar/sonar-scanner.zip -d /opt/sonar
+          apt-get install -y -qq --no-install-recommends libbsd-dev lcov
 
-      - name: Build with build-wrapper
+      - name: Install Build Wrapper
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
+
+      - name: Build, run, and collect coverage for every mode/variant
+        # Loop over each (mode, variant) combination that needs running.
+        # Modes 1/2/3 are variant-agnostic (no trigger byte to switch),
+        # so they run only with the default AJ-SR04M variant; modes 4
+        # and 5 also run with the JSN-SR04T variant to cover the 0x55
+        # trigger-byte path.
+        #
+        # Mode 4 / AJ-SR04M is wrapped by build-wrapper so SonarCloud's
+        # CFamily analyzer has a compile_commands.json that exercises
+        # the UART path used by most consumers.
         shell: bash
         run: |
           set -e
           . "${IDF_PATH}/export.sh"
-          cd "${EXAMPLE_PATH}"
-          idf.py set-target "${IDF_TARGET}"
-          /opt/sonar/build-wrapper-linux-x86/build-wrapper-linux-x86-64 \
-            --out-dir "${BUILD_WRAPPER_OUT_DIR}" \
-            idf.py build size
+          cd "${TEST_PATH}"
+          for spec in \
+              "1:aj_sr04m" "2:aj_sr04m" "3:aj_sr04m" \
+              "4:aj_sr04m" "4:jsn_sr04t" \
+              "5:aj_sr04m" "5:jsn_sr04t"; do
+            MODE="${spec%:*}"
+            VARIANT="${spec#*:}"
+            TAG="mode${MODE}_${VARIANT}"
+            echo "===== ${TAG} ====="
+            rm -rf build sdkconfig
+            DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.mode${MODE}"
+            if [ "${VARIANT}" = "jsn_sr04t" ]; then
+              DEFAULTS="${DEFAULTS};sdkconfig.defaults.jsn_sr04t"
+            fi
+            SDKCONFIG_DEFAULTS="${DEFAULTS}" \
+              idf.py --preview set-target linux >/dev/null
+            if [ "${TAG}" = "mode4_aj_sr04m" ]; then
+              build-wrapper-linux-x86-64 \
+                --out-dir "${BUILD_WRAPPER_OUT_DIR}" \
+                idf.py build
+            else
+              idf.py build
+            fi
+            ./build/aj_sr04m_test_linux.elf | tee "output.${TAG}.log"
+            grep -qE "Failures +0 " "output.${TAG}.log"
+            grep -q "=== TESTS_DONE ===" "output.${TAG}.log"
+
+            # Generate .gcov files into a per-run dir first, then copy
+            # them into the flat gcov-flat/ dir with a TAG prefix so
+            # multiple runs for the same source don't overwrite each
+            # other. SonarCloud's CFamily gcov sensor reads a SINGLE
+            # directory and aggregates execution counts across every
+            # .gcov it finds in it.
+            mkdir -p "gcov-reports/${TAG}" gcov-flat
+            ( cd "gcov-reports/${TAG}" \
+              && find ../../build -name "*.gcno" -print0 \
+                 | xargs -0 -I{} gcov -p -b -c "{}" >/dev/null || true )
+            for f in "gcov-reports/${TAG}"/*.gcov; do
+              [ -f "$f" ] || continue
+              base=$(basename "$f")
+              cp "$f" "gcov-flat/${TAG}.${base}"
+            done
+
+            # lcov 2.x rejects Unity's TEST_CASE expansion as a
+            # "mismatched end line" because the macro spans multiple
+            # GCC line tags pointing at the same source line. The
+            # ignore-errors flag downgrades it to a warning; tests
+            # files themselves are excluded from the report anyway.
+            lcov --capture --directory build \
+                 --output-file "coverage.${TAG}.info" \
+                 --base-directory "$(pwd)/../.." \
+                 --rc lcov_branch_coverage=1 \
+                 --ignore-errors mismatch,gcov,source
+            lcov --extract "coverage.${TAG}.info" "*/aj_sr04m/src/*" \
+                 --output-file "coverage.${TAG}.info" \
+                 --ignore-errors empty,unused
+          done
+
+          # Combined lcov.info across every run — handy as a single
+          # downloadable artifact for humans (matches what Codecov-style
+          # tools expect). Sonar reads gcov-flat/ below.
+          lcov $(for f in coverage.*.info; do printf -- "-a %s " "$f"; done) \
+               --output-file coverage.info \
+               --ignore-errors empty,inconsistent
+          lcov --list coverage.info
 
       - name: Filter compile_commands.json to C-only
+        # SonarCloud CFamily 6.x chokes on -std=gnu++26 used by some IDF
+        # components (mbedtls etc.). aj_sr04m is pure C, so dropping the
+        # C++ entries loses nothing.
         shell: bash
         run: |
           set -e
-          JSON="${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json"
+          JSON="${TEST_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json"
           python3 - "$JSON" <<'PY'
           import json, sys
           path = sys.argv[1]
           with open(path) as f:
               data = json.load(f)
-          # Drop C++ entries -- SonarCloud CFamily 6.80 chokes on -std=gnu++26
-          # used by some IDF components (mbedtls etc.). The aj_sr04m project
-          # itself is pure C, so we lose nothing.
           c_only = [e for e in data if e.get('file', '').endswith('.c')]
           with open(path, 'w') as f:
               json.dump(c_only, f)
@@ -165,27 +285,35 @@ jobs:
           PY
 
       - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6.0.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        shell: bash
-        run: |
-          set -e
-          /opt/sonar/sonar-scanner-7.2.0.5079-linux-x64/bin/sonar-scanner \
-            --define "sonar.cfamily.compile-commands=${EXAMPLE_PATH}/${BUILD_WRAPPER_OUT_DIR}/compile_commands.json" \
-            --define "sonar.cpp.file.suffixes=-" \
-            --define "sonar.objc.file.suffixes=-"
+        with:
+          args: >
+            --define sonar.cfamily.compile-commands=${{ env.TEST_PATH }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json
+            --define sonar.cfamily.gcov.reportsPath=${{ env.TEST_PATH }}/gcov-flat
+            --define sonar.cpp.file.suffixes=-
+            --define sonar.objc.file.suffixes=-
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-coverage
+          path: |
+            ${{ env.TEST_PATH }}/coverage.info
+            ${{ env.TEST_PATH }}/coverage.*.info
+            ${{ env.TEST_PATH }}/gcov-flat/
 
   upload_components:
     runs-on: ubuntu-latest
-    needs: [build-and-scan, test]
+    needs: [build-component, test, linux-test]
     if: startsWith(github.event.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
       - name: Upload component to the component registry
         uses: espressif/upload-components-ci-action@v2
         with:
-          components: "aj_sr04m"
+          components: "aj_sr04m: ."
           version: ${{ github.ref_name }}
           namespace: "CyrilB1531"
-          api_token: ${{ secrets.TOKEN_GIT_TO_REGISTRY}}
-          directories: components
+          api_token: ${{ secrets.IDF_COMPONENT_API_TOKEN}}

@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+#
+# SPDX-License-Identifier: MIT
+#
+# The sensor mode is supplied by the per-mode fragment under
+# `sdkconfig.defaults.mode{1..5}`. CI runs each via SDKCONFIG_DEFAULTS.
+# When no fragment is added, the Kconfig default (mode 1) applies.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y

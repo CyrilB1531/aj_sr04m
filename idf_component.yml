@@ -1,0 +1,33 @@
+## IDF Component Manager Manifest File
+## https://docs.espressif.com/projects/idf-component-manager/en/latest/reference/manifest_file.html
+
+version: "0.0.1"
+
+description: "ESP-IDF driver for the AJ-SR04M waterproof ultrasonic distance sensor (modes 1-5: GPIO trigger/echo and UART)."
+
+url: "https://github.com/CyrilB1531/aj_sr04m"
+
+maintainers:
+  - "Cyril Brunet"
+
+tags:
+  - sensor
+  - ultrasonic
+  - distance
+  - aj-sr04m
+  - jsn-sr04t
+  - hc-sr04
+  - waterproof
+
+## Supported chip targets. Extend the list after validating on each variant.
+## `linux` is included so the host test app under tests/linux/ can build
+## against the component for gcov coverage; runtime support on the
+## POSIX/Linux simulator is limited to the pure parser entry points and the
+## mode-4 UART path (driven through --wrap'd mocks in tests/main/mocks.c).
+targets:
+  - esp32
+  - esp32s3
+  - linux
+
+dependencies:
+  idf: ">=5.4"

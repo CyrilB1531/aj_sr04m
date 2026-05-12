@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+#
+# SPDX-License-Identifier: MIT
+#
+# Doxygen 1.9+ configuration for the aj_sr04m public API.
+# Build with `doxygen docs/Doxyfile` from the repo root.
+
+PROJECT_NAME           = "aj_sr04m"
+PROJECT_BRIEF          = "ESP-IDF driver for the AJ-SR04M ultrasonic distance sensor"
+OUTPUT_DIRECTORY       = docs/build
+
+INPUT                  = include src README.md
+USE_MDFILE_AS_MAINPAGE = README.md
+RECURSIVE              = YES
+FILE_PATTERNS          = *.h *.c *.md
+
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = NO
+EXTRACT_PRIVATE        = NO
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+
+QUIET                  = YES
+WARN_AS_ERROR          = NO
+WARN_NO_PARAMDOC       = YES
+
+PREDEFINED             = DOXYGEN_SHOULD_SKIP_THIS
+
+# Component sources include ESP-IDF headers that doxygen shouldn't try to
+# resolve; the docs only cover the public API exposed in include/.
+EXCLUDE_PATTERNS       = */build/* */tests/* */examples/*

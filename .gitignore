@@ -56,5 +56,5 @@ dkms.conf
 build/
 sdkconfig*
 .vscode/
-!sdkconfig.defaults
+!sdkconfig.defaults*
 dependencies.lock

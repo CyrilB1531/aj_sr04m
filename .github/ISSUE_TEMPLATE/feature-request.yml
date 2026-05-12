@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+# SPDX-License-Identifier: MIT
+name: Feature Request
+description: Propose a new feature or sensor mode
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is missing or hard to do with the current driver?
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: Success criteria
+      description: How will we know the feature is done? Measurable if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Sketch the API change, new Kconfig option, or driver path. Link to the datasheet section if relevant.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you ruled out, and why.
+    validations:
+      required: false

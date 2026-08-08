@@ -49,10 +49,18 @@ static int s_sensor_count = 0;
 static bool s_initialized = false;
 
 /* RMT RX done callback: shared by modes 1-2 echo capture and the modes 4-5
- * software UART backend. */
-static bool IRAM_ATTR rmt_rx_done_cb(rmt_channel_handle_t channel,
+ * software UART backend. The signature is imposed by ESP-IDF's
+ * rmt_rx_done_callback_t; the channel is not needed, since the sensor
+ * instance arrives through user_data.
+ *
+ * NOSONAR on the parameter line: c:S995 asks for a pointer-to-const
+ * channel, which would change the function type and make it incompatible
+ * with the rmt_rx_event_callbacks_t field this is assigned to. */
+static bool IRAM_ATTR rmt_rx_done_cb(rmt_channel_handle_t channel, // NOSONAR
                                      const rmt_rx_done_event_data_t *edata,
                                      void *user_data) {
+  (void)channel;
+
   BaseType_t hp_task_woken = pdFALSE;
   aj_sr04m_sensor_t *sensor = (aj_sr04m_sensor_t *)user_data;
   sensor->rx_num_symbols = edata->num_symbols;

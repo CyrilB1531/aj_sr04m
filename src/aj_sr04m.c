@@ -482,6 +482,13 @@ void aj_sr04m_delete(aj_sr04m_handle_t handle) {
 
 int aj_sr04m_get_sensor_count(void) { return s_sensor_count; }
 
+aj_sr04m_handle_t aj_sr04m_get_handle(int index) {
+  if (index < 0 || index >= aj_sr04m_registered_count())
+    return NULL;
+
+  return s_sensor_handles[index];
+}
+
 esp_err_t aj_sr04m_trigger_all(void) {
   if (!s_initialized || s_sensor_count == 0)
     return ESP_ERR_INVALID_STATE;

@@ -16,7 +16,7 @@
 
 #include "sdkconfig.h"
 
-#if CONFIG_AJ_SR04M_MODE_3
+#if CONFIG_AJ_SR04M_MODE_3 && CONFIG_AJ_SR04M_MAX_SENSORS == 1
 
 #include <stdint.h>
 

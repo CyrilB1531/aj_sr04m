@@ -221,6 +221,26 @@ aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
 int aj_sr04m_get_sensor_count(void);
 
 /**
+ * @brief Get the handle of a configured sensor by index.
+ *
+ * Sensors created by aj_sr04m_init() from the Kconfig settings are not
+ * returned to the caller; this is how the application reaches one of them
+ * to drive it individually instead of through aj_sr04m_trigger_all() /
+ * aj_sr04m_read_all().
+ *
+ * Indices follow the Kconfig order, sensor 1 first. Deleting a sensor
+ * shifts the ones after it down, so a handle read before a deletion may
+ * refer to another sensor afterwards.
+ *
+ * @param index 0-based index, below aj_sr04m_get_sensor_count()
+ *
+ * @return
+ *    - the sensor handle
+ *    - NULL if @p index is out of range
+ */
+aj_sr04m_handle_t aj_sr04m_get_handle(int index);
+
+/**
  * @brief Trigger a distance measurement on all configured sensors.
  *
  * @return

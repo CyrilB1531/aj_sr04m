@@ -76,9 +76,9 @@ TEST_CASE("trigger: drives GPIO high then low and starts RMT receive",
   int rx_calls_before = g_rmt_mock.receive_calls;
   int gpio_calls_before = g_gpio_mock.set_level_calls;
 
-  aj_sr04m_trigger();
+  aj_sr04m_trigger_all();
 
-  /* aj_sr04m_trigger arms RMT before raising the pin. */
+  /* Triggering arms RMT before raising the pin. */
   TEST_ASSERT_EQUAL(rx_calls_before + 1, g_rmt_mock.receive_calls);
   /* Two gpio_set_level calls: trigger high then trigger low. */
   TEST_ASSERT_EQUAL(gpio_calls_before + 2, g_gpio_mock.set_level_calls);
@@ -90,7 +90,7 @@ TEST_CASE("trigger: drives GPIO high then low and starts RMT receive",
 TEST_CASE("trigger: mode 1 pulse width is 15 us", "[aj_sr04m][trigger]") {
   mocks_reset();
   aj_sr04m_init();
-  aj_sr04m_trigger();
+  aj_sr04m_trigger_all();
   TEST_ASSERT_EQUAL(1, g_esp_rom_mock.delay_us_calls);
   TEST_ASSERT_EQUAL(15, g_esp_rom_mock.last_delay_us);
 }
@@ -100,13 +100,13 @@ TEST_CASE("trigger: mode 1 pulse width is 15 us", "[aj_sr04m][trigger]") {
 TEST_CASE("trigger: mode 2 pulse width is 1100 us", "[aj_sr04m][trigger]") {
   mocks_reset();
   aj_sr04m_init();
-  aj_sr04m_trigger();
+  aj_sr04m_trigger_all();
   TEST_ASSERT_EQUAL(1, g_esp_rom_mock.delay_us_calls);
   TEST_ASSERT_EQUAL(1100, g_esp_rom_mock.last_delay_us);
 }
 #endif
 
-TEST_CASE("read_duration: OK with synthetic 8746 us pulse -> ~1500 mm",
+TEST_CASE("read: OK with synthetic 8746 us pulse -> ~1500 mm",
           "[aj_sr04m][read]") {
   mocks_reset();
   /* 0.1715 mm/µs × 8746 µs ≈ 1500 mm */
@@ -114,48 +114,46 @@ TEST_CASE("read_duration: OK with synthetic 8746 us pulse -> ~1500 mm",
   g_rmt_mock.fire_pulse_high_us = 8746;
 
   aj_sr04m_init();
-  aj_sr04m_trigger();
+  aj_sr04m_trigger_all();
   int16_t dist = 0;
-  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK, aj_sr04m_read_duration(&dist));
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK, mocks_read_one(&dist));
   /* Allow ±1 mm slop from float truncation in the driver. */
   TEST_ASSERT_INT16_WITHIN(1, 1500, dist);
 }
 
-TEST_CASE("read_duration: NO_ECHO when pulse maps below 200 mm",
-          "[aj_sr04m][read]") {
+TEST_CASE("read: NO_ECHO when pulse maps below 200 mm", "[aj_sr04m][read]") {
   mocks_reset();
   /* 100 µs → ~17 mm, well under the 200 mm minimum. */
   g_rmt_mock.fire_pulse_on_receive = true;
   g_rmt_mock.fire_pulse_high_us = 100;
 
   aj_sr04m_init();
-  aj_sr04m_trigger();
+  aj_sr04m_trigger_all();
   int16_t dist = 0;
-  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, aj_sr04m_read_duration(&dist));
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, mocks_read_one(&dist));
 }
 
-TEST_CASE("read_duration: NO_ECHO when pulse maps above 4500 mm",
-          "[aj_sr04m][read]") {
+TEST_CASE("read: NO_ECHO when pulse maps above 4500 mm", "[aj_sr04m][read]") {
   mocks_reset();
   /* 30000 µs → ~5145 mm, beyond the 4500 mm cap. */
   g_rmt_mock.fire_pulse_on_receive = true;
   g_rmt_mock.fire_pulse_high_us = 30000;
 
   aj_sr04m_init();
-  aj_sr04m_trigger();
+  aj_sr04m_trigger_all();
   int16_t dist = 0;
-  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, aj_sr04m_read_duration(&dist));
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, mocks_read_one(&dist));
 }
 
-TEST_CASE("read_duration: NO_ECHO when no callback fires (semaphore timeout)",
+TEST_CASE("read: NO_ECHO when no callback fires (semaphore timeout)",
           "[aj_sr04m][read]") {
   mocks_reset();
   /* fire_pulse_on_receive stays false → rmt_receive does not invoke the
    * callback → xSemaphoreTake times out (50 ms) → NO_ECHO. */
   aj_sr04m_init();
-  aj_sr04m_trigger();
+  aj_sr04m_trigger_all();
   int16_t dist = 0;
-  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, aj_sr04m_read_duration(&dist));
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, mocks_read_one(&dist));
 }
 
 #endif /* CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2 */

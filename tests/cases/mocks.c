@@ -10,7 +10,7 @@
 
 #include "freertos/FreeRTOS.h"
 
-#if CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
+#if CONFIG_IDF_TARGET_LINUX || CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
 #include "esp_attr.h"
 
 /* esp_rom_delay_us exists on both ESP targets and the linux port
@@ -32,7 +32,7 @@ extern esp_err_t __real_gpio_set_level(gpio_num_t pin, uint32_t level);
 
 struct uart_mock_state g_uart_mock;
 
-#if CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
+#if CONFIG_IDF_TARGET_LINUX || CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
 struct gpio_mock_state g_gpio_mock;
 struct esp_rom_mock_state g_esp_rom_mock;
 struct rmt_mock_state g_rmt_mock;
@@ -48,7 +48,7 @@ void mocks_reset(void) {
   g_uart_mock.read_buffer = NULL;
   g_uart_mock.read_buffer_len = 0;
 
-#if CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
+#if CONFIG_IDF_TARGET_LINUX || CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
   memset(&g_gpio_mock, 0, sizeof(g_gpio_mock));
   g_gpio_mock.config_ret = ESP_OK;
   g_gpio_mock.set_level_ret = ESP_OK;
@@ -61,6 +61,12 @@ void mocks_reset(void) {
   g_rmt_mock.enable_ret = ESP_OK;
   g_rmt_mock.receive_ret = ESP_OK;
 #endif
+}
+
+esp_err_t __wrap_uart_driver_delete(uart_port_t port) {
+  (void)port;
+  g_uart_mock.driver_delete_calls++;
+  return ESP_OK;
 }
 
 esp_err_t __wrap_uart_driver_install(uart_port_t port, int rx_buffer_size,
@@ -122,7 +128,7 @@ int __wrap_uart_read_bytes(uart_port_t port, void *buf, uint32_t length,
   return g_uart_mock.read_bytes_ret;
 }
 
-#if CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
+#if CONFIG_IDF_TARGET_LINUX || CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
 
 esp_err_t __wrap_gpio_config(const gpio_config_t *cfg) {
   g_gpio_mock.config_calls++;
@@ -199,6 +205,16 @@ esp_err_t __wrap_rmt_enable(rmt_channel_handle_t channel) {
   return g_rmt_mock.enable_ret;
 }
 
+esp_err_t __wrap_rmt_disable(rmt_channel_handle_t channel) {
+  (void)channel;
+  return ESP_OK;
+}
+
+esp_err_t __wrap_rmt_del_channel(rmt_channel_handle_t channel) {
+  (void)channel;
+  return ESP_OK;
+}
+
 esp_err_t __wrap_rmt_receive(rmt_channel_handle_t channel, void *buffer,
                              size_t buffer_size,
                              const rmt_receive_config_t *cfg) {
@@ -229,4 +245,14 @@ esp_err_t __wrap_rmt_receive(rmt_channel_handle_t channel, void *buffer,
   return g_rmt_mock.receive_ret;
 }
 
-#endif /* CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2 */
+#endif /* hardware-driver mocks (linux all modes, ESP modes 1-2) */
+
+aj_sr04m_dist_status_t mocks_read_one(int16_t *dist) {
+  aj_sr04m_dist_status_t status = AJ_SR04M_DIST_BAD_FRAME;
+  int count = 0;
+  if (aj_sr04m_read_all(dist, &status, 1, &count) != ESP_OK) {
+    return AJ_SR04M_DIST_BAD_FRAME;
+  }
+  (void)count;
+  return status;
+}

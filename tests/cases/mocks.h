@@ -15,7 +15,9 @@
 
 #include "driver/uart.h"
 
-#if CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
+#include "aj_sr04m.h"
+
+#if CONFIG_IDF_TARGET_LINUX || CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
 #include "driver/gpio.h"
 #include "driver/rmt_rx.h"
 #endif
@@ -25,6 +27,7 @@
  * recorded calls. */
 struct uart_mock_state {
   int driver_install_calls;
+  int driver_delete_calls;
   int param_config_calls;
   int set_pin_calls;
   int write_bytes_calls;
@@ -52,7 +55,7 @@ struct uart_mock_state {
 
 extern struct uart_mock_state g_uart_mock;
 
-#if CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
+#if CONFIG_IDF_TARGET_LINUX || CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
 
 /* GPIO mock state (modes 1-2 only) — records configure/set_level calls
  * and lets tests inject error returns to exercise ESP_RETURN_ON_ERROR
@@ -112,8 +115,23 @@ struct rmt_mock_state {
 
 extern struct rmt_mock_state g_rmt_mock;
 
-#endif /* CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2 */
+#endif /* hardware-driver mocks (linux all modes, ESP modes 1-2) */
 
 /* Zero out the mock state and set sensible defaults (success returns). Call
  * at the top of every TEST_CASE that uses the wrapped functions. */
 void mocks_reset(void);
+
+/**
+ * @brief Read the single configured sensor through the multi-sensor API.
+ *
+ * Mirrors the old single-sensor read convenience: the caller must have called
+ * aj_sr04m_init() first so exactly one sensor is configured.
+ *
+ * @param[out] dist distance in millimeters (valid only if the return is
+ * AJ_SR04M_DIST_OK)
+ *
+ * @return
+ *    - the measurement status of the single configured sensor
+ *    - AJ_SR04M_DIST_BAD_FRAME if the read could not be performed
+ */
+aj_sr04m_dist_status_t mocks_read_one(int16_t *dist);

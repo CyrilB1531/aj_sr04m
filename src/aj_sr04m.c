@@ -132,17 +132,34 @@ static void aj_sr04m_register_handle(aj_sr04m_handle_t handle) {
   }
 }
 
-static void aj_sr04m_unregister_handle(aj_sr04m_handle_t handle) {
-  for (int i = 0; i < s_sensor_count; i++) {
+/* s_sensor_count never exceeds AJ_SR04M_MAX_SENSORS: only
+ * aj_sr04m_register_handle() grows it, under that bound. Every loop below
+ * still repeats the bound explicitly, so the limit holds locally instead of
+ * resting on an invariant established in another function. */
+static int aj_sr04m_registered_count(void) {
+  return s_sensor_count < AJ_SR04M_MAX_SENSORS ? s_sensor_count
+                                               : AJ_SR04M_MAX_SENSORS;
+}
+
+static void aj_sr04m_unregister_handle(const struct aj_sr04m_sensor *handle) {
+  const int count = aj_sr04m_registered_count();
+
+  int index = -1;
+  for (int i = 0; i < count; i++) {
     if (s_sensor_handles[i] == handle) {
-      const int last = s_sensor_count - 1;
-      for (int j = i; j < last && j + 1 < AJ_SR04M_MAX_SENSORS; j++) {
-        s_sensor_handles[j] = s_sensor_handles[j + 1];
-      }
-      s_sensor_count--;
-      return;
+      index = i;
+      break;
     }
   }
+
+  if (index < 0)
+    return;
+
+  for (int i = index; i + 1 < count; i++) {
+    s_sensor_handles[i] = s_sensor_handles[i + 1];
+  }
+  s_sensor_handles[count - 1] = NULL;
+  s_sensor_count--;
 }
 
 static void aj_sr04m_cleanup_configured_sensors(void) {
@@ -152,7 +169,7 @@ static void aj_sr04m_cleanup_configured_sensors(void) {
 }
 
 static esp_err_t aj_sr04m_configure_sensors_from_kconfig(void) {
-  aj_sr04m_handle_t handle =
+  const struct aj_sr04m_sensor *handle =
       aj_sr04m_new(CONFIG_AJ_SR04M_TRIGGER_PIN, CONFIG_AJ_SR04M_ECHO_PIN,
                    CONFIG_AJ_SR04M_TRIGGER_BYTE, AJ_SR04M_SENSOR_1_UART_PORT);
   if (handle == NULL)
@@ -469,7 +486,8 @@ esp_err_t aj_sr04m_trigger_all(void) {
   if (!s_initialized || s_sensor_count == 0)
     return ESP_ERR_INVALID_STATE;
 
-  for (int i = 0; i < s_sensor_count; i++) {
+  const int count = aj_sr04m_registered_count();
+  for (int i = 0; i < count; i++) {
     /* Co-located modules hear each other's 40 kHz burst. Firing them back
      * to back makes the neighbour's burst race the real echo, and the
      * loser reports its out-of-range sentinel. Spacing the triggers keeps
@@ -492,11 +510,12 @@ esp_err_t aj_sr04m_read_all(int16_t *distances,
   if (max_sensors < s_sensor_count)
     return ESP_ERR_INVALID_SIZE;
 
-  for (int i = 0; i < s_sensor_count; i++) {
+  const int count = aj_sr04m_registered_count();
+  for (int i = 0; i < count; i++) {
     statuses[i] = aj_sr04m_read_distance(s_sensor_handles[i], &distances[i]);
   }
 
-  *out_sensor_count = s_sensor_count;
+  *out_sensor_count = count;
   return ESP_OK;
 }
 

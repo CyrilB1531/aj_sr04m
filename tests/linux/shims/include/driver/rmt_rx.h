@@ -71,6 +71,8 @@ esp_err_t rmt_rx_register_event_callbacks(rmt_channel_handle_t rx_channel,
                                           const rmt_rx_event_callbacks_t *cbs,
                                           void *user_data);
 esp_err_t rmt_enable(rmt_channel_handle_t channel);
+esp_err_t rmt_disable(rmt_channel_handle_t channel);
+esp_err_t rmt_del_channel(rmt_channel_handle_t channel);
 esp_err_t rmt_receive(rmt_channel_handle_t rx_channel, void *buffer,
                       size_t buffer_size, const rmt_receive_config_t *config);
 

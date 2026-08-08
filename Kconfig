@@ -75,14 +75,152 @@ menu "AJ-SR04M Configuration"
             (e.g. GPIO 34-39 on classic ESP32) are valid here.
 
     config AJ_SR04M_UART_NUM
-        int "UART port number"
-        range 0 2 if IDF_TARGET_ESP32 || IDF_TARGET_ESP32S3
+        int "UART port number (>= number of HW UARTs = software/RMT backend)"
+        range 0 9
         default 2 if IDF_TARGET_ESP32 || IDF_TARGET_ESP32S3
-        range 0 1
         default 1
         depends on AJ_SR04M_MODE_3 || AJ_SR04M_MODE_4 || AJ_SR04M_MODE_5
         help
-            UART port used to communicate with the sensor in modes 3, 4 and 5.
-            UART0 is typically the console -- avoid using it.
+            UART port for the sensor in modes 3-5. A value within the chip's
+            real controllers (0..SOC_UART_NUM-1, i.e. 0-2 on ESP32) uses that
+            hardware UART. A value greater than or equal to the number of real
+            controllers selects the software UART backend (bit-banged TX +
+            RMT RX on the chosen GPIOs), which lets you exceed the hardware
+            UART count. UART0 is typically the console -- avoid it.
+
+    config AJ_SR04M_MAX_SENSORS
+        int "Maximum number of simultaneous sensor instances"
+        range 1 8
+        default 1
+        help
+            Defines the pool size for sensor instances. Each instance consumes
+            memory for buffers and (in GPIO mode) RMT channel handles.
+
+            For GPIO modes (1-2): each instance needs an RMT RX channel.
+            Most ESP32 targets provide 4-8 RMT channels, but some may be
+            reserved by other drivers.
+
+            For UART modes (3-5): each instance needs a dedicated UART port.
+            ESP32 typically provides 3 UART ports (0-2).
+
+            Adjust this value based on your available hardware resources.
+
+    config AJ_SR04M_TRIGGER_STAGGER_MS
+        int "Delay between consecutive triggers (ms)"
+        range 0 1000
+        default 150
+        depends on AJ_SR04M_MAX_SENSORS > 1
+        help
+            Delay aj_sr04m_trigger_all() inserts between two sensors.
+
+            Modules mounted side by side hear each other's 40 kHz burst. When
+            they are fired back to back, the neighbour's burst competes with
+            the real echo and the affected module answers with its
+            out-of-range sentinel, reported as AJ_SR04M_DIST_NO_ECHO. Spacing
+            the triggers gives each measurement a clear window.
+
+            150 ms is the value validated on two modules a few centimetres
+            apart. Raise it if sensors still drop readings, lower it toward 0
+            only if they face away from each other or are acoustically
+            isolated.
+
+            Cost: aj_sr04m_trigger_all() blocks for this delay times the
+            number of sensors minus one.
+
+    menu "Sensor Configuration"
+        visible if AJ_SR04M_MAX_SENSORS > 1
+
+        help
+            When using multiple sensors, configure additional sensor pins below.
+            Sensor 1 always uses TRIGGER_PIN and ECHO_PIN above.
+            Additional sensors use SENSOR_N_* options.
+
+        config AJ_SR04M_SENSOR_2_TRIGGER_PIN
+            int "Sensor 2: Trigger / UART TX GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+            default 19
+            depends on AJ_SR04M_MAX_SENSORS >= 2
+            help
+                GPIO for sensor 2's TRIGGER (modes 1-2) or UART TX (3-5).
+
+        config AJ_SR04M_SENSOR_2_ECHO_PIN
+            int "Sensor 2: Echo / UART RX GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+            default 18
+            depends on AJ_SR04M_MAX_SENSORS >= 2
+            help
+                GPIO for sensor 2's ECHO (modes 1-2) or UART RX (3-5).
+
+        config AJ_SR04M_SENSOR_2_UART_NUM
+            int "Sensor 2: UART port number"
+            range 0 9
+            default 1 if IDF_TARGET_ESP32 || IDF_TARGET_ESP32S3
+            default 0
+            depends on (AJ_SR04M_MODE_3 || AJ_SR04M_MODE_4 || AJ_SR04M_MODE_5) && AJ_SR04M_MAX_SENSORS >= 2
+            help
+                UART port for sensor 2 (modes 3-5). A value < the number of real
+                UART controllers uses that hardware port (must differ from every
+                other hardware-backed sensor); a value >= it selects the
+                software (RMT) backend, so more sensors than hardware UARTs are
+                supported. UART0 is typically the console -- avoid it.
+
+        config AJ_SR04M_SENSOR_3_TRIGGER_PIN
+            int "Sensor 3: Trigger / UART TX GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+            default 21
+            depends on AJ_SR04M_MAX_SENSORS >= 3
+            help
+                GPIO for sensor 3's TRIGGER (modes 1-2) or UART TX (3-5).
+
+        config AJ_SR04M_SENSOR_3_ECHO_PIN
+            int "Sensor 3: Echo / UART RX GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+            default 20
+            depends on AJ_SR04M_MAX_SENSORS >= 3
+            help
+                GPIO for sensor 3's ECHO (modes 1-2) or UART RX (3-5).
+
+        config AJ_SR04M_SENSOR_3_UART_NUM
+            int "Sensor 3: UART port number"
+            range 0 9
+            default 3
+            depends on (AJ_SR04M_MODE_3 || AJ_SR04M_MODE_4 || AJ_SR04M_MODE_5) && AJ_SR04M_MAX_SENSORS >= 3
+            help
+                UART port for sensor 3 (modes 3-5). A value < the number of real
+                UART controllers uses that hardware port (must differ from every
+                other hardware-backed sensor); a value >= it selects the
+                software (RMT) backend. The default 3 is a software port on
+                classic ESP32 (3 controllers), since two HW UARTs are usually
+                taken by sensor 1 and the console.
+
+        config AJ_SR04M_SENSOR_4_TRIGGER_PIN
+            int "Sensor 4: Trigger / UART TX GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
+            default 23
+            depends on AJ_SR04M_MAX_SENSORS >= 4
+            help
+                GPIO for sensor 4's TRIGGER (modes 1-2) or UART TX (3-5).
+
+        config AJ_SR04M_SENSOR_4_ECHO_PIN
+            int "Sensor 4: Echo / UART RX GPIO"
+            range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
+            default 22
+            depends on AJ_SR04M_MAX_SENSORS >= 4
+            help
+                GPIO for sensor 4's ECHO (modes 1-2) or UART RX (3-5).
+
+        config AJ_SR04M_SENSOR_4_UART_NUM
+            int "Sensor 4: UART port number"
+            range 0 9
+            default 4
+            depends on (AJ_SR04M_MODE_3 || AJ_SR04M_MODE_4 || AJ_SR04M_MODE_5) && AJ_SR04M_MAX_SENSORS >= 4
+            help
+                UART port for sensor 4 (modes 3-5). A value < the number of real
+                UART controllers uses that hardware port; a value >= it selects
+                the software (RMT) backend. Four simultaneous UART sensors are
+                now supported on classic ESP32 by putting the extra sensors on
+                software ports (one RMT RX channel each).
+
+    endmenu
 
 endmenu

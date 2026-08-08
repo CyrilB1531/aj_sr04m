@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+#
+# SPDX-License-Identifier: MIT
+#
+# Software UART fragment, stacked on top of a UART mode fragment (3-5).
+# Port numbers at or above the chip's real UART controller count select
+# the bit-banged TX + RMT RX backend, which no other fragment reaches:
+# they all sit on hardware ports.
+CONFIG_AJ_SR04M_UART_NUM=9
+CONFIG_AJ_SR04M_SENSOR_2_UART_NUM=9
+
+# Two sensors, for the same reason as sdkconfig.defaults.multi: it
+# compiles out the test_mode*.c files, whose exact mock call counts
+# assume the hardware backend. test_multi_sensor.c drives the driver
+# through whichever backend the port numbers above select.
+CONFIG_AJ_SR04M_MAX_SENSORS=2
+CONFIG_AJ_SR04M_TRIGGER_STAGGER_MS=1

@@ -1,7 +1,7 @@
 ## IDF Component Manager Manifest File
 ## https://docs.espressif.com/projects/idf-component-manager/en/latest/reference/manifest_file.html
 
-version: "0.0.1"
+version: "0.2.0"
 
 description: "ESP-IDF driver for the AJ-SR04M waterproof ultrasonic distance sensor (modes 1-5: GPIO trigger/echo and UART)."
 

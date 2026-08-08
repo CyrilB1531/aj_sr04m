@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Cyril Brunet
+#
+# SPDX-License-Identifier: MIT
+#
+# Multi-sensor fragment, stacked on top of a mode fragment. Drives the
+# code paths that stay dead at a single sensor: the handle-array loops,
+# the trigger stagger and the removal shift.
+#
+# The mode-specific test files are compiled out here (they assert exact
+# mock call counts, which a second sensor doubles); tests/cases/
+# test_multi_sensor.c takes over instead.
+CONFIG_AJ_SR04M_MAX_SENSORS=2
+
+# Non-zero so the stagger branch in aj_sr04m_trigger_all() is exercised,
+# small enough not to slow the suite down.
+CONFIG_AJ_SR04M_TRIGGER_STAGGER_MS=1

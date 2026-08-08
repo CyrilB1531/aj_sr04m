@@ -11,12 +11,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "aj_sr04m.h"
+
 /* Coverage instrumentation can be enabled via -D-DDISABLE_COVERAGE=OFF at the
  * project level. On the ESP32/QEMU target the .gcda data is reconstructed
  * from a UART dump; on the linux target gcov writes .gcda files directly
  * to the build tree on process exit (so the linux app_main must `exit()`
  * rather than spin, otherwise the SIGTERM that kills it never runs the
  * gcov destructors). */
+
+void setUp(void) {}
+
+void tearDown(void) { aj_sr04m_deinit(); }
 
 void app_main(void) {
   UNITY_BEGIN();

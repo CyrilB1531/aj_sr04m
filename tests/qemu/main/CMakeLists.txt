@@ -11,11 +11,13 @@ idf_component_register(
         "${CASES}/main_test.c"
         "${CASES}/mocks.c"
         "${CASES}/test_parser.c"
+        "${CASES}/test_sw_uart.c"
         "${CASES}/test_mode1_2_gpio_rmt.c"
         "${CASES}/test_mode3_autonomous.c"
         "${CASES}/test_mode4_uart_binary.c"
         "${CASES}/test_mode5_uart_ascii.c"
-    INCLUDE_DIRS "${CASES}"
+        "${CASES}/test_multi_sensor.c"
+    INCLUDE_DIRS "${CASES}" "${CMAKE_CURRENT_LIST_DIR}/../../../priv_include"
     REQUIRES unity aj_sr04m esp_driver_uart esp_driver_gpio esp_driver_rmt
             esp_rom
     WHOLE_ARCHIVE
@@ -25,6 +27,7 @@ idf_component_register(
 # build does not reference them.
 target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=uart_driver_install"
+    "-Wl,--wrap=uart_driver_delete"
     "-Wl,--wrap=uart_param_config"
     "-Wl,--wrap=uart_set_pin"
     "-Wl,--wrap=uart_write_bytes"
@@ -43,6 +46,8 @@ if(CONFIG_AJ_SR04M_MODE_1 OR CONFIG_AJ_SR04M_MODE_2)
         "-Wl,--wrap=rmt_new_rx_channel"
         "-Wl,--wrap=rmt_rx_register_event_callbacks"
         "-Wl,--wrap=rmt_enable"
+        "-Wl,--wrap=rmt_disable"
+        "-Wl,--wrap=rmt_del_channel"
         "-Wl,--wrap=rmt_receive"
     )
 endif()

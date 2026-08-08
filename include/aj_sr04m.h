@@ -33,6 +33,41 @@ extern "C" {
 #define AJ_SR04M_MODE CONFIG_AJ_SR04M_MODE
 
 /**
+ * @brief Maximum number of sensor instances managed by the driver.
+ *
+ * Configured via `idf.py menuconfig` → AJ-SR04M Configuration. Bounds the
+ * size of the arrays passed to aj_sr04m_read_all().
+ */
+#define AJ_SR04M_MAX_SENSORS CONFIG_AJ_SR04M_MAX_SENSORS
+
+/**
+ * @brief Delay inserted between consecutive triggers in aj_sr04m_trigger_all().
+ *
+ * Configured via `idf.py menuconfig` → AJ-SR04M Configuration. Milliseconds.
+ * Zero fires every sensor back to back.
+ *
+ * @attention Co-located modules pick up each other's 40 kHz burst, which
+ * competes with the real echo and makes the affected sensor report
+ * AJ_SR04M_DIST_NO_ECHO on part of its readings. Keep a non-zero value
+ * unless the modules are acoustically isolated from one another.
+ */
+#ifdef CONFIG_AJ_SR04M_TRIGGER_STAGGER_MS
+#define AJ_SR04M_TRIGGER_STAGGER_MS CONFIG_AJ_SR04M_TRIGGER_STAGGER_MS
+#else
+/* Kconfig only exposes the option when several sensors are configured. */
+#define AJ_SR04M_TRIGGER_STAGGER_MS 0
+#endif
+
+/**
+ * @brief Opaque handle to an AJ-SR04M sensor instance.
+ *
+ * Created by aj_sr04m_new() and destroyed by aj_sr04m_delete().
+ * Multiple instances can coexist on the same board (limited by available
+ * RMT channels for GPIO modes, UART ports for UART modes).
+ */
+typedef struct aj_sr04m_sensor *aj_sr04m_handle_t;
+
+/**
  * @brief Status of a distance measurement.
  */
 typedef enum {
@@ -85,33 +120,87 @@ aj_sr04m_dist_status_t aj_sr04m_parse_ascii_frame(const char *data,
                                                   int16_t *distance);
 
 /**
- * @brief Initialize the AJ-SR04M sensor.
+ * @brief Initialize the AJ-SR04M driver.
  *
- * Configures the trigger GPIO + RMT RX capture (modes 1 and 2) or the UART
- * (modes 3, 4 and 5) according to AJ_SR04M_MODE.
+ * This function must be called once before creating any sensor instances.
+ * It initializes the global driver state (GPIO, RMT, or UART hardware as
+ * needed).
  *
  * @return
  *    - ESP_OK on success
  *    - ESP_ERR_NO_MEM if internal allocations fail
- *    - the error code returned by the GPIO, RMT or UART driver on failure
+ *    - the error code returned by the hardware driver on failure
  */
 esp_err_t aj_sr04m_init(void);
 
 /**
- * @brief Trigger a distance measurement.
+ * @brief Release all sensor instances and reset the driver.
+ *
+ * Deletes every sensor created by aj_sr04m_init()/aj_sr04m_new() and returns
+ * the driver to its pre-initialized state, so aj_sr04m_init() can run a fresh
+ * configuration. Safe to call when the driver is not initialized.
+ *
+ * @return
+ *    - ESP_OK on success
+ */
+esp_err_t aj_sr04m_deinit(void);
+
+/**
+ * @brief Create a new AJ-SR04M sensor instance.
+ *
+ * @param trigger_pin GPIO pin for TRIGGER (modes 1-2) or UART TX (modes 3-5)
+ * @param echo_pin    GPIO pin for ECHO (modes 1-2) or UART RX (modes 3-5)
+ * @param trigger_byte UART trigger byte (modes 4-5 only, ignored for modes
+ * 1-3)
+ * @param uart_num    UART port (modes 3-5). A value in [0, SOC_UART_NUM) uses
+ * that hardware controller; any other value selects the software (RMT) UART
+ * backend. Ignored in modes 1-2.
+ *
+ * @return
+ *    - handle (non-NULL) on success
+ *    - NULL if allocation fails or if hardware resources are exhausted
+ *
+ * @note
+ *    - Modes 1-2 (GPIO): each instance requires a dedicated RMT RX channel.
+ *      ESP32 typically provides 4-8 RMT channels; adjust
+ * CONFIG_AJ_SR04M_MAX_SENSORS accordingly.
+ *    - Modes 3-5 (UART): a hardware-backend instance needs a dedicated UART
+ *      port (ESP32 provides 3, ports 0-2); a software-backend instance needs
+ *      one RMT RX channel instead, lifting the per-port limit.
+ *    - The instance operates in the global mode AJ_SR04M_MODE (configured via
+ * menuconfig).
+ */
+aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
+                               uint8_t trigger_byte, int uart_num);
+
+/**
+ * @brief Delete (destroy) an AJ-SR04M sensor instance.
+ *
+ * Releases all resources associated with the sensor (GPIO, RMT channel, UART
+ * driver, semaphores, etc.).
+ *
+ * @param handle Handle returned by aj_sr04m_new()
+ */
+void aj_sr04m_delete(aj_sr04m_handle_t handle);
+
+/**
+ * @brief Trigger a distance measurement on a specific sensor instance.
  *
  * Behavior depending on AJ_SR04M_MODE:
  *    - modes 1 and 2: arm RMT RX, then pulse the TRIGGER pin
- *    - modes 4 and 5: send a 0x01 byte over the UART
+ *    - modes 4 and 5: send the trigger byte over the UART
  *    - mode 3: no-op (the module emits frames autonomously)
+ *
+ * @param handle Handle returned by aj_sr04m_new()
  */
-void aj_sr04m_trigger(void);
+void aj_sr04m_trigger(aj_sr04m_handle_t handle);
 
 /**
- * @brief Read the distance measured by the sensor.
+ * @brief Read the distance measured by a specific sensor instance.
  *
- * @param[out] distance distance in millimeters (valid only if the return value
- * is AJ_SR04M_DIST_OK)
+ * @param handle   Handle returned by aj_sr04m_new()
+ * @param[out] distance distance in millimeters (valid only if the return
+ * value is AJ_SR04M_DIST_OK)
  *
  * @return
  *    - AJ_SR04M_DIST_OK if the measurement is valid
@@ -119,7 +208,65 @@ void aj_sr04m_trigger(void);
  *    - AJ_SR04M_DIST_BAD_CHECKSUM if the UART checksum is invalid
  *    - AJ_SR04M_DIST_BAD_FRAME if the UART frame is malformed
  */
-aj_sr04m_dist_status_t aj_sr04m_read_duration(int16_t *distance);
+aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
+                                              int16_t *distance);
+
+/**
+ * @brief Get the number of configured sensor instances.
+ *
+ * Sensors are configured from Kconfig when aj_sr04m_init() is called.
+ *
+ * @return number of configured sensors
+ */
+int aj_sr04m_get_sensor_count(void);
+
+/**
+ * @brief Get the handle of a configured sensor by index.
+ *
+ * Sensors created by aj_sr04m_init() from the Kconfig settings are not
+ * returned to the caller; this is how the application reaches one of them
+ * to drive it individually instead of through aj_sr04m_trigger_all() /
+ * aj_sr04m_read_all().
+ *
+ * Indices follow the Kconfig order, sensor 1 first. Deleting a sensor
+ * shifts the ones after it down, so a handle read before a deletion may
+ * refer to another sensor afterwards.
+ *
+ * @param index 0-based index, below aj_sr04m_get_sensor_count()
+ *
+ * @return
+ *    - the sensor handle
+ *    - NULL if @p index is out of range
+ */
+aj_sr04m_handle_t aj_sr04m_get_handle(int index);
+
+/**
+ * @brief Trigger a distance measurement on all configured sensors.
+ *
+ * @return
+ *    - ESP_OK if at least one sensor was triggered successfully
+ *    - ESP_ERR_INVALID_STATE if the driver is not initialized or no sensors are
+ * configured
+ */
+esp_err_t aj_sr04m_trigger_all(void);
+
+/**
+ * @brief Read distances from all configured sensors.
+ *
+ * @param[out] distances      array to receive measured distances in millimeters
+ * @param[out] statuses       array to receive measurement statuses
+ * @param[in]  max_sensors    capacity of the provided arrays
+ * @param[out] out_sensor_count number of sensors read
+ *
+ * @return
+ *    - ESP_OK on success
+ *    - ESP_ERR_INVALID_ARG if arrays are NULL or max_sensors is too small
+ *    - ESP_ERR_INVALID_STATE if the driver is not initialized or no sensors are
+ * configured
+ */
+esp_err_t aj_sr04m_read_all(int16_t *distances,
+                            aj_sr04m_dist_status_t *statuses, int max_sensors,
+                            int *out_sensor_count);
 
 #ifdef __cplusplus
 }

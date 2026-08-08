@@ -49,10 +49,14 @@ static int s_sensor_count = 0;
 static bool s_initialized = false;
 
 /* RMT RX done callback: shared by modes 1-2 echo capture and the modes 4-5
- * software UART backend. */
+ * software UART backend. The signature is imposed by
+ * rmt_rx_event_callbacks_t; the channel is not needed, since the sensor
+ * instance arrives through user_data. */
 static bool IRAM_ATTR rmt_rx_done_cb(rmt_channel_handle_t channel,
                                      const rmt_rx_done_event_data_t *edata,
                                      void *user_data) {
+  (void)channel;
+
   BaseType_t hp_task_woken = pdFALSE;
   aj_sr04m_sensor_t *sensor = (aj_sr04m_sensor_t *)user_data;
   sensor->rx_num_symbols = edata->num_symbols;

@@ -12,6 +12,7 @@ idf_component_register(
         "${CASES}/mocks.c"
         "${CASES}/test_parser.c"
         "${CASES}/test_sw_uart.c"
+        "${CASES}/test_sw_uart_init.c"
         "${CASES}/test_mode1_2_gpio_rmt.c"
         "${CASES}/test_mode3_autonomous.c"
         "${CASES}/test_mode4_uart_binary.c"

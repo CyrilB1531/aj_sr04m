@@ -68,6 +68,45 @@ static bool IRAM_ATTR rmt_rx_done_cb(rmt_channel_handle_t channel, // NOSONAR
   return hp_task_woken == pdTRUE;
 }
 
+/* Releases whichever RMT capture resources the sensor currently owns and
+ * clears the pointers, so a slot left behind by a failed aj_sr04m_new()
+ * carries no dangling handle. Safe to call at any point of the setup
+ * sequence: every field is checked before being released.
+ *
+ * @param sensor         sensor slot to release
+ * @param disable_channel true once rmt_enable() has succeeded */
+static void aj_sr04m_release_rmt_resources(aj_sr04m_sensor_t *sensor,
+                                           bool disable_channel) {
+  if (sensor->rx_done_sem != NULL) {
+    vSemaphoreDelete(sensor->rx_done_sem);
+    sensor->rx_done_sem = NULL;
+  }
+  if (sensor->rx_channel != NULL) {
+    if (disable_channel) {
+      rmt_disable(sensor->rx_channel);
+    }
+    rmt_del_channel(sensor->rx_channel);
+    sensor->rx_channel = NULL;
+  }
+  if (sensor->rx_buffer != NULL) {
+    free(sensor->rx_buffer);
+    sensor->rx_buffer = NULL;
+  }
+}
+
+/* Returns the TRIG (modes 1-2) / software UART TX pin to a high-impedance
+ * input, so a deleted sensor stops driving the line. */
+static void aj_sr04m_release_trigger_pin(int trigger_pin) {
+  gpio_config_t idle_cfg = {
+      .pin_bit_mask = 1ULL << trigger_pin,
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  gpio_config(&idle_cfg);
+}
+
 #if AJ_SR04M_MODE < 3
 static uint32_t extract_high_pulse_us(const aj_sr04m_sensor_t *sensor) {
   for (size_t i = 0; i < sensor->rx_num_symbols; i++) {
@@ -286,6 +325,7 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
 
   if (gpio_set_level(trigger_pin, 0) != ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to set trigger pin %d low", trigger_pin);
+    aj_sr04m_release_trigger_pin(trigger_pin);
     return NULL;
   }
 
@@ -294,6 +334,7 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
       malloc(AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t));
   if (sensor->rx_buffer == NULL) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to allocate RMT RX buffer");
+    aj_sr04m_release_trigger_pin(trigger_pin);
     return NULL;
   }
 
@@ -307,7 +348,7 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
   if (rmt_new_rx_channel(&rx_chan_cfg, &sensor->rx_channel) != ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to allocate RMT RX channel for pin %d",
              echo_pin);
-    free(sensor->rx_buffer);
+    aj_sr04m_release_rmt_resources(sensor, false);
     return NULL;
   }
 
@@ -315,8 +356,7 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
   sensor->rx_done_sem = xSemaphoreCreateBinary();
   if (sensor->rx_done_sem == NULL) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to create RMT semaphore");
-    rmt_del_channel(sensor->rx_channel);
-    free(sensor->rx_buffer);
+    aj_sr04m_release_rmt_resources(sensor, false);
     return NULL;
   }
 
@@ -327,18 +367,14 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
   if (rmt_rx_register_event_callbacks(sensor->rx_channel, &cbs, sensor) !=
       ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to register RMT callback");
-    vSemaphoreDelete(sensor->rx_done_sem);
-    rmt_del_channel(sensor->rx_channel);
-    free(sensor->rx_buffer);
+    aj_sr04m_release_rmt_resources(sensor, false);
     return NULL;
   }
 
   /* Enable RMT channel */
   if (rmt_enable(sensor->rx_channel) != ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to enable RMT channel");
-    vSemaphoreDelete(sensor->rx_done_sem);
-    rmt_del_channel(sensor->rx_channel);
-    free(sensor->rx_buffer);
+    aj_sr04m_release_rmt_resources(sensor, false);
     return NULL;
   }
 
@@ -409,14 +445,15 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
     };
     if (rmt_new_rx_channel(&rx_chan_cfg, &sensor->rx_channel) != ESP_OK) {
       ESP_LOGE(AJ_SR04M_TAG, "Unable to allocate SW UART RMT channel");
-      free(sensor->rx_buffer);
+      aj_sr04m_release_rmt_resources(sensor, false);
+      aj_sr04m_release_trigger_pin(trigger_pin);
       return NULL;
     }
 
     sensor->rx_done_sem = xSemaphoreCreateBinary();
     if (sensor->rx_done_sem == NULL) {
-      rmt_del_channel(sensor->rx_channel);
-      free(sensor->rx_buffer);
+      aj_sr04m_release_rmt_resources(sensor, false);
+      aj_sr04m_release_trigger_pin(trigger_pin);
       return NULL;
     }
 
@@ -424,9 +461,8 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
     if (rmt_rx_register_event_callbacks(sensor->rx_channel, &cbs, sensor) !=
             ESP_OK ||
         rmt_enable(sensor->rx_channel) != ESP_OK) {
-      vSemaphoreDelete(sensor->rx_done_sem);
-      rmt_del_channel(sensor->rx_channel);
-      free(sensor->rx_buffer);
+      aj_sr04m_release_rmt_resources(sensor, false);
+      aj_sr04m_release_trigger_pin(trigger_pin);
       return NULL;
     }
     ESP_LOGI(AJ_SR04M_TAG, "Sensor UART(SW/RMT): tx=%d rx=%d", trigger_pin,
@@ -456,29 +492,13 @@ void aj_sr04m_delete(aj_sr04m_handle_t handle) {
 
 #if AJ_SR04M_MODE < 3
   /* GPIO + RMT cleanup */
-  if (sensor->rx_channel != NULL) {
-    rmt_disable(sensor->rx_channel);
-    rmt_del_channel(sensor->rx_channel);
-  }
-  if (sensor->rx_done_sem != NULL) {
-    vSemaphoreDelete(sensor->rx_done_sem);
-  }
-  if (sensor->rx_buffer != NULL) {
-    free(sensor->rx_buffer);
-  }
+  aj_sr04m_release_rmt_resources(sensor, true);
+  aj_sr04m_release_trigger_pin(sensor->trigger_pin);
 #else
   /* SW backend owns RMT/GPIO resources; HW backend owns a UART driver. */
   if (sensor->backend == AJ_SR04M_UART_BACKEND_SW) {
-    if (sensor->rx_channel != NULL) {
-      rmt_disable(sensor->rx_channel);
-      rmt_del_channel(sensor->rx_channel);
-    }
-    if (sensor->rx_done_sem != NULL) {
-      vSemaphoreDelete(sensor->rx_done_sem);
-    }
-    if (sensor->rx_buffer != NULL) {
-      free(sensor->rx_buffer);
-    }
+    aj_sr04m_release_rmt_resources(sensor, true);
+    aj_sr04m_release_trigger_pin(sensor->trigger_pin);
   } else {
     uart_driver_delete(sensor->uart_num);
   }

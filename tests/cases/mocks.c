@@ -134,6 +134,7 @@ esp_err_t __wrap_gpio_config(const gpio_config_t *cfg) {
   g_gpio_mock.config_calls++;
   if (cfg) {
     g_gpio_mock.last_pin_bit_mask = cfg->pin_bit_mask;
+    g_gpio_mock.last_mode = (int)cfg->mode;
   }
   if (g_gpio_mock.config_ret != ESP_OK) {
     return g_gpio_mock.config_ret;

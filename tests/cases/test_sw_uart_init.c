@@ -26,6 +26,8 @@
     CONFIG_AJ_SR04M_UART_NUM >= SOC_UART_NUM
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "unity.h"
 
 #include "driver/gpio.h"
@@ -138,6 +140,39 @@ TEST_CASE("sw uart init: fails on TX pin configuration error",
 
   TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
   TEST_ASSERT_EQUAL(0, aj_sr04m_get_sensor_count());
+}
+
+/* Regression for #18. The software backend used to wait
+ * AJ_SR04M_RMT_TIMEOUT_MS — 50 ms, sized for a modes 1-2 echo round trip —
+ * for a module reply that lands ~100-200 ms after the trigger byte, plus the
+ * 30 ms of line idle RMT needs before it reports the capture. Mode 5 over
+ * this backend therefore returned NO_ECHO whatever the sensor measured.
+ *
+ * Asserting on elapsed time rather than on the constant: what matters is
+ * that a read actually stays available long enough for a real reply. With
+ * nothing ever completing the capture, each sensor burns its full timeout,
+ * so the old 50 ms budget cannot reach the bound below. */
+TEST_CASE("sw uart read: waits long enough for a module reply",
+          "[aj_sr04m][sw_uart][read]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_trigger_all());
+
+  int16_t distances[CONFIG_AJ_SR04M_MAX_SENSORS] = {0};
+  aj_sr04m_dist_status_t statuses[CONFIG_AJ_SR04M_MAX_SENSORS] = {0};
+  int count = 0;
+
+  const TickType_t started = xTaskGetTickCount();
+  TEST_ASSERT_EQUAL(ESP_OK,
+                    aj_sr04m_read_all(distances, statuses,
+                                      CONFIG_AJ_SR04M_MAX_SENSORS, &count));
+  const TickType_t elapsed = xTaskGetTickCount() - started;
+
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, statuses[0]);
+  /* Well above the old 50 ms per sensor, well below one new timeout, so the
+   * bound holds however many sensors the fragment configures. */
+  TEST_ASSERT_GREATER_OR_EQUAL(pdMS_TO_TICKS(200), elapsed);
 }
 
 #endif /* UART mode on a software-backend port, linux target */

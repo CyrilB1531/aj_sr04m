@@ -44,6 +44,16 @@
 #define AJ_SR04M_RMT_TIMEOUT_MS 50     /* > round-trip time at max range */
 #define AJ_SR04M_RMT_IDLE_NS 30000000U /* 30 ms idle threshold */
 
+/* UART modes (3-5) wait on the module, not on an echo: a reply lands
+ * ~100-200 ms after the trigger byte, so the 50 ms above — sized for a
+ * 4.5 m round trip — expires long before it. */
+#define AJ_SR04M_UART_REPLY_TIMEOUT_MS 250
+
+/* The software backend waits for the same reply, then for the line to sit
+ * idle for AJ_SR04M_RMT_IDLE_NS before RMT reports the capture complete. */
+#define AJ_SR04M_SW_UART_CAPTURE_TIMEOUT_MS                                    \
+  (AJ_SR04M_UART_REPLY_TIMEOUT_MS + (AJ_SR04M_RMT_IDLE_NS / 1000000U) + 20)
+
 #define AJ_SR04M_MAX_SENSORS CONFIG_AJ_SR04M_MAX_SENSORS
 
 /* Global state: array of sensor instances */
@@ -678,7 +688,8 @@ aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
    * 8N1 bytes, then reuse the same frame parsers as the hardware backend. */
   if (sensor->backend == AJ_SR04M_UART_BACKEND_SW) {
     if (xSemaphoreTake(sensor->rx_done_sem,
-                       pdMS_TO_TICKS(AJ_SR04M_RMT_TIMEOUT_MS)) != pdTRUE)
+                       pdMS_TO_TICKS(AJ_SR04M_SW_UART_CAPTURE_TIMEOUT_MS)) !=
+        pdTRUE)
       return AJ_SR04M_DIST_NO_ECHO;
     uint8_t bytes[64];
     size_t n = aj_sr04m_sw_uart_decode(
@@ -695,7 +706,7 @@ aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
   /* ASCII frame "Gap=XXXX mm\r\n", reply latency ~100-200 ms */
   char data[64];
   int len = uart_read_bytes(sensor->uart_num, (uint8_t *)data, sizeof(data) - 1,
-                            pdMS_TO_TICKS(250));
+                            pdMS_TO_TICKS(AJ_SR04M_UART_REPLY_TIMEOUT_MS));
   if (len <= 0)
     return AJ_SR04M_DIST_BAD_FRAME;
   data[len] = '\0';

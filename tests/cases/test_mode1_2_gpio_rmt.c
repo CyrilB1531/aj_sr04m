@@ -183,4 +183,33 @@ TEST_CASE("trigger: drops a completion left by a timed-out cycle",
   TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, mocks_read_one(&dist));
 }
 
+#if CONFIG_IDF_TARGET_LINUX
+/* The two aj_sr04m_new() exits no driver mock can reach. They matter more
+ * than their length suggests: each one runs the cleanup that releases what
+ * the setup had already acquired, so an untested exit is an untested
+ * release. Injection is linux-only — see tests/linux/main/CMakeLists.txt. */
+TEST_CASE("init: fails when the RMT buffer allocation fails",
+          "[aj_sr04m][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  g_heap_mock.fail_rmt_buffer_alloc = true;
+
+  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(1, g_heap_mock.rmt_buffer_alloc_calls);
+  /* Setup got as far as driving the trigger pin, so it must have handed it
+   * back before giving up. */
+  TEST_ASSERT_EQUAL(GPIO_MODE_INPUT, g_gpio_mock.last_mode);
+}
+
+TEST_CASE("init: fails when the RMT semaphore cannot be created",
+          "[aj_sr04m][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  g_heap_mock.fail_semaphore_create = true;
+
+  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(1, g_heap_mock.semaphore_create_calls);
+}
+#endif /* CONFIG_IDF_TARGET_LINUX */
+
 #endif /* CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2 */

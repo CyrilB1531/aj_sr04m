@@ -115,4 +115,28 @@ TEST_CASE("read: mode 3 BAD_FRAME on UART read returning 0 bytes",
   TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME, mocks_read_one(&dist));
 }
 
+/* Regression for #15. An autonomous module streams a frame every ~100 ms
+ * with nothing delimiting the reads, so the driver's buffer holds several
+ * frames and starts and ends mid-frame. Reads used to demand a buffer whose
+ * length was exactly one frame, which that stream never produces — so every
+ * mode 3 read returned BAD_FRAME on real hardware while this file's
+ * 4-byte-buffer cases passed. */
+TEST_CASE("read: mode 3 finds the newest frame in a streamed buffer",
+          "[aj_sr04m][read]") {
+  mocks_reset();
+  static const uint8_t stream[15] = {
+      0xDC, 0xE0,                   /* tail of a frame that started earlier */
+      0xFF, 0x05, 0xDC, 0xE0,       /* 1500 mm */
+      0xFF, 0x07, 0xD0, 0xD6,       /* 2000 mm */
+      0xFF, 0x03, 0xE8, 0xEA, 0xFF, /* 1000 mm (newest), then a bare header */
+  };
+  g_uart_mock.read_buffer = stream;
+  g_uart_mock.read_buffer_len = sizeof(stream);
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK, mocks_read_one(&dist));
+  TEST_ASSERT_EQUAL_INT16(1000, dist);
+}
+
 #endif /* CONFIG_AJ_SR04M_MODE_3 */

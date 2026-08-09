@@ -101,6 +101,40 @@ aj_sr04m_dist_status_t aj_sr04m_parse_binary_frame(const uint8_t *data, int len,
                                                    int16_t *distance);
 
 /**
+ * @brief Extract the freshest binary frame from a stream buffer (modes 3-4).
+ *
+ * Unlike aj_sr04m_parse_binary_frame(), which expects a buffer holding exactly
+ * one frame, this scans a buffer of arbitrary length for frame boundaries. Use
+ * it whenever the read length is not known to be a frame length: mode 3 streams
+ * continuously with nothing delimiting the reads, so a buffer typically holds
+ * several frames plus a partial one, and a software-UART capture may decode
+ * extra bytes around the payload.
+ *
+ * The scan runs backwards, so the frame reported is the most recent complete
+ * one in the buffer. Frames are located by header and validated by checksum,
+ * which is what keeps a 0xFF appearing inside a distance field from being
+ * mistaken for a header.
+ *
+ * @param[in]  data     buffer possibly containing several frames
+ * @param[in]  len      number of bytes in @p data
+ * @param[out] distance distance in millimeters (valid only if return is
+ * AJ_SR04M_DIST_OK)
+ *
+ * @note Passing a buffer holding exactly one frame behaves like
+ * aj_sr04m_parse_binary_frame() on the same buffer.
+ *
+ * @return
+ *    - AJ_SR04M_DIST_OK if a valid frame was found and its distance is in
+ * [200, 4500] mm
+ *    - AJ_SR04M_DIST_NO_ECHO if the newest valid frame carries a distance out
+ * of [200, 4500] mm
+ *    - AJ_SR04M_DIST_BAD_CHECKSUM if every candidate frame failed its checksum
+ *    - AJ_SR04M_DIST_BAD_FRAME if no candidate frame was found at all
+ */
+aj_sr04m_dist_status_t aj_sr04m_parse_binary_stream(const uint8_t *data,
+                                                    int len, int16_t *distance);
+
+/**
  * @brief Parse an ASCII frame from the AJ-SR04M (mode 5).
  *
  * Frame format: "Gap=XXXX mm" possibly preceded by garbage bytes and followed

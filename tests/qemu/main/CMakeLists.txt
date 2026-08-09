@@ -33,6 +33,7 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=uart_set_pin"
     "-Wl,--wrap=uart_write_bytes"
     "-Wl,--wrap=uart_read_bytes"
+    "-Wl,--wrap=uart_flush_input"
 )
 
 # GPIO + RMT + esp_rom wraps are only added for modes 1/2. These symbols

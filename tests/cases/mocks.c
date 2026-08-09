@@ -111,11 +111,18 @@ esp_err_t __wrap_uart_set_pin(uart_port_t port, int tx_io_num, int rx_io_num,
 int __wrap_uart_write_bytes(uart_port_t port, const void *src, size_t size) {
   (void)port;
   g_uart_mock.write_bytes_calls++;
+  g_uart_mock.flush_calls_at_write = g_uart_mock.flush_input_calls;
   g_uart_mock.last_write_size = size;
   if (size > 0 && src) {
     g_uart_mock.last_write_byte = ((const uint8_t *)src)[0];
   }
   return g_uart_mock.write_bytes_ret;
+}
+
+esp_err_t __wrap_uart_flush_input(uart_port_t port) {
+  (void)port;
+  g_uart_mock.flush_input_calls++;
+  return ESP_OK;
 }
 
 int __wrap_uart_read_bytes(uart_port_t port, void *buf, uint32_t length,

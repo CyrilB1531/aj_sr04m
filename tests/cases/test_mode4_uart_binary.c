@@ -138,4 +138,22 @@ TEST_CASE("read: mode 4 BAD_FRAME on UART read returning 0 bytes",
   TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME, mocks_read_one(&dist));
 }
 
+/* Regression for #17. A reply that arrives after its read has timed out
+ * stays in the driver's ring buffer; without a flush, the next cycle returns
+ * it and every later cycle stays one measurement behind. Asserting the
+ * ordering, not just the call: a flush after the trigger byte would drop the
+ * very reply the cycle is waiting for. */
+TEST_CASE("trigger: flushes the input buffer before the trigger byte",
+          "[aj_sr04m][trigger]") {
+  mocks_reset();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_trigger_all());
+
+  TEST_ASSERT_EQUAL(1, g_uart_mock.write_bytes_calls);
+  TEST_ASSERT_EQUAL(1, g_uart_mock.flush_input_calls);
+  /* The flush was already counted when the byte went out. */
+  TEST_ASSERT_EQUAL(1, g_uart_mock.flush_calls_at_write);
+}
+
 #endif /* CONFIG_AJ_SR04M_MODE_4 */

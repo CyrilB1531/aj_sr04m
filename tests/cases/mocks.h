@@ -32,6 +32,11 @@ struct uart_mock_state {
   int set_pin_calls;
   int write_bytes_calls;
   int read_bytes_calls;
+  int flush_input_calls;
+  /* Value of flush_input_calls when the last trigger byte went out. Lets a
+   * test assert the flush happened *before* the write rather than merely
+   * somewhere in the cycle. */
+  int flush_calls_at_write;
 
   esp_err_t driver_install_ret;
   esp_err_t param_config_ret;

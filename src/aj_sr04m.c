@@ -642,6 +642,14 @@ void aj_sr04m_trigger(aj_sr04m_handle_t handle) {
   if (sensor->backend == AJ_SR04M_UART_BACKEND_SW) {
     aj_sr04m_sw_uart_write_byte(sensor->trigger_pin, sensor->trigger_byte);
   } else {
+    /* Start the cycle from an empty buffer. A reply that arrived after its
+     * read had timed out is still sitting there, and would be returned as
+     * this cycle's measurement — leaving every later cycle one reading
+     * behind, or, in mode 5, splitting a "Gap=" payload across two reads.
+     *
+     * Only the prompted modes flush. Mode 3 streams unprompted, so draining
+     * its buffer would discard the very frames the read is after. */
+    uart_flush_input(sensor->uart_num);
     uart_write_bytes(sensor->uart_num, &sensor->trigger_byte, 1);
   }
 #endif

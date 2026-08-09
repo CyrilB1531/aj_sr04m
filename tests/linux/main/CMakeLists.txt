@@ -53,3 +53,18 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=rmt_del_channel"
     "-Wl,--wrap=rmt_receive"
 )
+
+# Allocation-failure injection, linux only. aj_sr04m_new() has two exits no
+# driver mock can reach — the RMT buffer malloc and the rx_done_sem creation
+# — and they are exactly the paths that free what was already acquired, so
+# leaving them untested leaves the cleanup untested. xSemaphoreCreateBinary()
+# is a macro over xQueueGenericCreate(), hence the wrap on the queue call.
+#
+# Deliberately NOT applied to the QEMU project: wrapping malloc on an ESP
+# target intercepts allocations IDF makes during startup, long before any
+# test runs. The mocks filter by allocation size and queue type so that even
+# here they only ever fire for the driver's own calls.
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=malloc"
+    "-Wl,--wrap=xQueueGenericCreate"
+)

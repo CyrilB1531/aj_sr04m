@@ -121,6 +121,28 @@ extern struct rmt_mock_state g_rmt_mock;
 
 #endif /* hardware-driver mocks (linux all modes, ESP modes 1-2) */
 
+#if CONFIG_IDF_TARGET_LINUX
+
+/* Allocation-failure injection, for the aj_sr04m_new() exits that no driver
+ * mock can reach: the RMT buffer malloc and the rx_done_sem creation.
+ *
+ * Both wraps stay inert until a flag is armed, and each targets its call
+ * narrowly — malloc only fails for a buffer of exactly the driver's RMT
+ * capture size, and the queue wrap only for a binary semaphore. That is what
+ * keeps them from disturbing the allocations ESP-IDF, Unity and the C
+ * library make around the code under test. Each flag disarms itself once it
+ * has fired, so one armed flag injects exactly one failure. */
+struct heap_mock_state {
+  bool fail_rmt_buffer_alloc; /**< next RMT-sized malloc returns NULL */
+  bool fail_semaphore_create; /**< next binary semaphore returns NULL */
+  int rmt_buffer_alloc_calls; /**< RMT-sized mallocs seen */
+  int semaphore_create_calls; /**< binary semaphores created */
+};
+
+extern struct heap_mock_state g_heap_mock;
+
+#endif /* CONFIG_IDF_TARGET_LINUX */
+
 /* Zero out the mock state and set sensible defaults (success returns). Call
  * at the top of every TEST_CASE that uses the wrapped functions. */
 void mocks_reset(void);

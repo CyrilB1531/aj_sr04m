@@ -74,4 +74,70 @@ TEST_CASE("sw uart deinit: releases the TX pin", "[aj_sr04m][sw_uart][init]") {
   TEST_ASSERT_EQUAL(GPIO_MODE_INPUT, g_gpio_mock.last_mode);
 }
 
+/* Regression for #16. Arming used to be compiled in only for modes 4-5,
+ * while the matching read path covers every UART mode: a mode 3 sensor on a
+ * software port waited on a receiver nothing had started, so every read
+ * timed out as NO_ECHO. Reachable from the default Kconfig, where sensors 3
+ * and 4 sit on ports above SOC_UART_NUM. */
+TEST_CASE("sw uart trigger: arms the RMT receiver in every UART mode",
+          "[aj_sr04m][sw_uart][trigger]") {
+  mocks_reset();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+  const int received_before = g_rmt_mock.receive_calls;
+  const int written_before = g_uart_mock.write_bytes_calls;
+
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_trigger_all());
+
+  TEST_ASSERT_GREATER_THAN(received_before, g_rmt_mock.receive_calls);
+#if CONFIG_AJ_SR04M_MODE_3
+  /* Autonomous: arming happens, prompting must not. */
+  TEST_ASSERT_EQUAL(written_before, g_uart_mock.write_bytes_calls);
+#else
+  (void)written_before;
+#endif
+}
+
+/* Same two exits on the software backend, which allocates and creates its
+ * own capture resources rather than sharing the modes 1-2 ones. */
+TEST_CASE("sw uart init: fails when the RX buffer allocation fails",
+          "[aj_sr04m][sw_uart][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  g_heap_mock.fail_rmt_buffer_alloc = true;
+
+  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(1, g_heap_mock.rmt_buffer_alloc_calls);
+}
+
+TEST_CASE("sw uart init: fails when the RMT semaphore cannot be created",
+          "[aj_sr04m][sw_uart][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  g_heap_mock.fail_semaphore_create = true;
+
+  assert_init_fails_and_releases_tx_pin();
+  TEST_ASSERT_EQUAL(1, g_heap_mock.semaphore_create_calls);
+}
+
+TEST_CASE("sw uart new: returns NULL before the driver is initialized",
+          "[aj_sr04m][sw_uart][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+
+  TEST_ASSERT_NULL(
+      aj_sr04m_new(CONFIG_AJ_SR04M_TRIGGER_PIN, CONFIG_AJ_SR04M_ECHO_PIN,
+                   CONFIG_AJ_SR04M_TRIGGER_BYTE, CONFIG_AJ_SR04M_UART_NUM));
+  TEST_ASSERT_EQUAL(0, aj_sr04m_get_sensor_count());
+}
+
+TEST_CASE("sw uart init: fails on TX pin configuration error",
+          "[aj_sr04m][sw_uart][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  g_gpio_mock.config_ret = ESP_FAIL;
+
+  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(0, aj_sr04m_get_sensor_count());
+}
+
 #endif /* UART mode on a software-backend port, linux target */

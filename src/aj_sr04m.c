@@ -98,6 +98,26 @@ static void aj_sr04m_release_rmt_resources(aj_sr04m_sensor_t *sensor,
   }
 }
 
+/* Arms the RMT receiver for one capture window.
+ *
+ * The drain is what makes a cycle independent of the previous one. A capture
+ * that completes after its read gave up leaves rx_done_sem signalled; without
+ * clearing it here, the next read would take that stale give immediately and
+ * decode rx_buffer while RMT is concurrently writing the new capture into it.
+ * The result is a torn buffer read with an rx_num_symbols belonging to
+ * neither capture — and the parsers may well accept it. */
+static void aj_sr04m_arm_rmt_capture(aj_sr04m_sensor_t *sensor) {
+  xSemaphoreTake(sensor->rx_done_sem, 0);
+
+  rmt_receive_config_t rx_cfg = {
+      .signal_range_min_ns = 1000, /* filter glitches < 1 us */
+      .signal_range_max_ns =
+          AJ_SR04M_RMT_IDLE_NS, /* idle threshold = end of frame */
+  };
+  rmt_receive(sensor->rx_channel, sensor->rx_buffer,
+              AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t), &rx_cfg);
+}
+
 /* Returns the TRIG (modes 1-2) / software UART TX pin to a high-impedance
  * input, so a deleted sensor stops driving the line. */
 static void aj_sr04m_release_trigger_pin(int trigger_pin) {
@@ -596,13 +616,7 @@ void aj_sr04m_trigger(aj_sr04m_handle_t handle) {
     return;
 
 #if AJ_SR04M_MODE < 3
-  rmt_receive_config_t rx_cfg = {
-      .signal_range_min_ns = 1000, /* filter glitches < 1 us */
-      .signal_range_max_ns =
-          AJ_SR04M_RMT_IDLE_NS, /* idle threshold = end of frame */
-  };
-  rmt_receive(sensor->rx_channel, sensor->rx_buffer,
-              AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t), &rx_cfg);
+  aj_sr04m_arm_rmt_capture(sensor);
 
   gpio_set_level(sensor->trigger_pin, 1);
   esp_rom_delay_us(
@@ -613,18 +627,24 @@ void aj_sr04m_trigger(aj_sr04m_handle_t handle) {
 #endif
   );
   gpio_set_level(sensor->trigger_pin, 0);
-#elif AJ_SR04M_MODE >= 4
+#else
+  /* Modes 3-5. Arming and prompting are separate steps: the software backend
+   * captures nothing until rmt_receive() runs, which mode 3 needs just as
+   * much as the others even though it sends no trigger byte. The hardware
+   * backend needs no arming — its UART driver buffers on its own. */
   if (sensor->backend == AJ_SR04M_UART_BACKEND_SW) {
-    rmt_receive_config_t rx_cfg = {
-        .signal_range_min_ns = 1000,
-        .signal_range_max_ns = AJ_SR04M_RMT_IDLE_NS,
-    };
-    rmt_receive(sensor->rx_channel, sensor->rx_buffer,
-                AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t), &rx_cfg);
+    aj_sr04m_arm_rmt_capture(sensor);
+  }
+
+#if AJ_SR04M_MODE >= 4
+  /* Mode 3 is autonomous: the module streams unprompted, so no byte goes
+   * out. Modes 4-5 ask for one measurement per trigger byte. */
+  if (sensor->backend == AJ_SR04M_UART_BACKEND_SW) {
     aj_sr04m_sw_uart_write_byte(sensor->trigger_pin, sensor->trigger_byte);
   } else {
     uart_write_bytes(sensor->uart_num, &sensor->trigger_byte, 1);
   }
+#endif
 #endif
 }
 

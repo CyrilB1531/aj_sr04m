@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 #if CONFIG_IDF_TARGET_LINUX || CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
 #include "esp_attr.h"
@@ -60,6 +61,10 @@ void mocks_reset(void) {
   g_rmt_mock.register_event_callbacks_ret = ESP_OK;
   g_rmt_mock.enable_ret = ESP_OK;
   g_rmt_mock.receive_ret = ESP_OK;
+#endif
+
+#if CONFIG_IDF_TARGET_LINUX
+  memset(&g_heap_mock, 0, sizeof(g_heap_mock));
 #endif
 }
 
@@ -247,6 +252,51 @@ esp_err_t __wrap_rmt_receive(rmt_channel_handle_t channel, void *buffer,
 }
 
 #endif /* hardware-driver mocks (linux all modes, ESP modes 1-2) */
+
+#if CONFIG_IDF_TARGET_LINUX
+
+struct heap_mock_state g_heap_mock;
+
+/* Size of the buffer aj_sr04m_new() allocates for an RMT capture. Matching
+ * on it keeps __wrap_malloc from failing anyone else's allocation while the
+ * flag is armed. Kept in sync with AJ_SR04M_RMT_NUM_SYMBOLS in aj_sr04m.c —
+ * a drift makes the injection stop firing, which shows up as the failure
+ * cases below no longer failing. */
+#define MOCKS_RMT_BUFFER_BYTES (64 * sizeof(rmt_symbol_word_t))
+
+extern void *__real_malloc(size_t size);
+
+void *__wrap_malloc(size_t size) {
+  if (size == MOCKS_RMT_BUFFER_BYTES) {
+    g_heap_mock.rmt_buffer_alloc_calls++;
+    if (g_heap_mock.fail_rmt_buffer_alloc) {
+      g_heap_mock.fail_rmt_buffer_alloc = false;
+      return NULL;
+    }
+  }
+  return __real_malloc(size);
+}
+
+/* xSemaphoreCreateBinary() is a macro over xQueueGenericCreate(), so the
+ * wrap goes on the queue entry point and filters by queue type. */
+extern QueueHandle_t __real_xQueueGenericCreate(UBaseType_t uxQueueLength,
+                                                UBaseType_t uxItemSize,
+                                                uint8_t ucQueueType);
+
+QueueHandle_t __wrap_xQueueGenericCreate(UBaseType_t uxQueueLength,
+                                         UBaseType_t uxItemSize,
+                                         uint8_t ucQueueType) {
+  if (ucQueueType == queueQUEUE_TYPE_BINARY_SEMAPHORE) {
+    g_heap_mock.semaphore_create_calls++;
+    if (g_heap_mock.fail_semaphore_create) {
+      g_heap_mock.fail_semaphore_create = false;
+      return NULL;
+    }
+  }
+  return __real_xQueueGenericCreate(uxQueueLength, uxItemSize, ucQueueType);
+}
+
+#endif /* CONFIG_IDF_TARGET_LINUX */
 
 aj_sr04m_dist_status_t mocks_read_one(int16_t *dist) {
   aj_sr04m_dist_status_t status = AJ_SR04M_DIST_BAD_FRAME;

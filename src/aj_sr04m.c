@@ -33,6 +33,10 @@
 #define AJ_SR04M_DIST_MIN_VALID_MM 200  /* sensor physical limit */
 #define AJ_SR04M_DIST_MAX_VALID_MM 4500 /* sensor physical limit */
 
+/* Binary frame (modes 3-4): header | dist_H | dist_L | checksum */
+#define AJ_SR04M_BINARY_FRAME_LEN 4
+#define AJ_SR04M_BINARY_FRAME_HEADER 0xFF
+
 /* RMT capture parameters: shared by modes 1-2 (echo) and the modes 4-5
  * software UART backend (frame capture). */
 #define AJ_SR04M_RMT_RESOLUTION_HZ 1000000U /* 1 MHz -> 1 us per RMT tick */
@@ -151,6 +155,34 @@ aj_sr04m_dist_status_t aj_sr04m_parse_binary_frame(const uint8_t *data, int len,
 
   *distance = mm;
   return AJ_SR04M_DIST_OK;
+}
+
+aj_sr04m_dist_status_t
+aj_sr04m_parse_binary_stream(const uint8_t *data, int len, int16_t *distance) {
+  if (data == NULL || len < AJ_SR04M_BINARY_FRAME_LEN)
+    return AJ_SR04M_DIST_BAD_FRAME;
+
+  /* Backwards, so the first frame accepted is the newest one in the buffer.
+   * A distance field can hold 0xFF, so a header match alone does not make a
+   * frame: only a matching checksum ends the scan. */
+  bool saw_bad_checksum = false;
+  for (int i = len - AJ_SR04M_BINARY_FRAME_LEN; i >= 0; i--) {
+    if (data[i] != AJ_SR04M_BINARY_FRAME_HEADER)
+      continue;
+
+    aj_sr04m_dist_status_t status = aj_sr04m_parse_binary_frame(
+        &data[i], AJ_SR04M_BINARY_FRAME_LEN, distance);
+    if (status == AJ_SR04M_DIST_BAD_CHECKSUM) {
+      saw_bad_checksum = true;
+      continue;
+    }
+    return status;
+  }
+
+  /* Headers were present but none checksummed: the bytes are frames, damaged
+   * in transit. Reporting BAD_FRAME instead would hide that distinction. */
+  return saw_bad_checksum ? AJ_SR04M_DIST_BAD_CHECKSUM
+                          : AJ_SR04M_DIST_BAD_FRAME;
 }
 
 aj_sr04m_dist_status_t aj_sr04m_parse_ascii_frame(const char *data,
@@ -635,7 +667,7 @@ aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
     bytes[n < sizeof(bytes) ? n : sizeof(bytes) - 1] = '\0';
     return aj_sr04m_parse_ascii_frame((const char *)bytes, distance);
 #else
-    return aj_sr04m_parse_binary_frame(bytes, (int)n, distance);
+    return aj_sr04m_parse_binary_stream(bytes, (int)n, distance);
 #endif
   }
 
@@ -649,11 +681,13 @@ aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
   data[len] = '\0';
   return aj_sr04m_parse_ascii_frame(data, distance);
 #else
-  /* Binary frame: 0xFF | dist_H | dist_L | checksum */
-  uint8_t data[16];
-  int len =
-      uart_read_bytes(sensor->uart_num, data, 15, 20 / portTICK_PERIOD_MS);
-  return aj_sr04m_parse_binary_frame(data, len, distance);
+  /* Binary frames, back to back in mode 3. Read a whole buffer rather than a
+   * frame's worth: the stream is not delimited, so a read lands mid-frame as
+   * often as not, and the scan below picks the newest complete one. */
+  uint8_t data[64];
+  int len = uart_read_bytes(sensor->uart_num, data, sizeof(data),
+                            20 / portTICK_PERIOD_MS);
+  return aj_sr04m_parse_binary_stream(data, len, distance);
 #endif
 #endif
 }

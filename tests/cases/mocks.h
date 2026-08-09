@@ -68,6 +68,10 @@ struct gpio_mock_state {
   uint64_t last_pin_bit_mask;
   int last_pin;
   int last_level;
+  /* Direction of the most recent gpio_config(). Tests assert on
+   * GPIO_MODE_INPUT to check that a deleted or failed sensor stopped
+   * driving its trigger pin. */
+  int last_mode;
 };
 
 extern struct gpio_mock_state g_gpio_mock;

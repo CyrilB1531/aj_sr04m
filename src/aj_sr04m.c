@@ -613,7 +613,11 @@ void aj_sr04m_trigger(aj_sr04m_handle_t handle) {
 #endif
   );
   gpio_set_level(sensor->trigger_pin, 0);
-#elif AJ_SR04M_MODE >= 4
+#else
+  /* Modes 3-5. Arming and prompting are separate steps: the software backend
+   * captures nothing until rmt_receive() runs, which mode 3 needs just as
+   * much as the others even though it sends no trigger byte. The hardware
+   * backend needs no arming — its UART driver buffers on its own. */
   if (sensor->backend == AJ_SR04M_UART_BACKEND_SW) {
     rmt_receive_config_t rx_cfg = {
         .signal_range_min_ns = 1000,
@@ -621,10 +625,17 @@ void aj_sr04m_trigger(aj_sr04m_handle_t handle) {
     };
     rmt_receive(sensor->rx_channel, sensor->rx_buffer,
                 AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t), &rx_cfg);
+  }
+
+#if AJ_SR04M_MODE >= 4
+  /* Mode 3 is autonomous: the module streams unprompted, so no byte goes
+   * out. Modes 4-5 ask for one measurement per trigger byte. */
+  if (sensor->backend == AJ_SR04M_UART_BACKEND_SW) {
     aj_sr04m_sw_uart_write_byte(sensor->trigger_pin, sensor->trigger_byte);
   } else {
     uart_write_bytes(sensor->uart_num, &sensor->trigger_byte, 1);
   }
+#endif
 #endif
 }
 

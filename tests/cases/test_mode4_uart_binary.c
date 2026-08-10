@@ -58,6 +58,62 @@ TEST_CASE("init: mode 4 fails on uart_set_pin error", "[aj_sr04m][init]") {
   TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
 }
 
+/* The GPIO mock these two cases read is compiled on the linux target only,
+ * and the hardware backend is what they exercise — a port number at or above
+ * the controller count would route aj_sr04m_new() through the bit-banged one,
+ * whose failure exits test_sw_uart_init.c covers. */
+#if CONFIG_IDF_TARGET_LINUX && CONFIG_AJ_SR04M_UART_NUM < SOC_UART_NUM
+
+/* Regression for #46. uart_set_pin() routes TX, RX, RTS and CTS one after
+ * another and TX goes first, so a failure can return with the trigger pin
+ * already wired to the peripheral. Deleting the driver does not undo that
+ * routing, and the caller only gets a NULL back: the pin would keep driving
+ * a line for a sensor that does not exist, with no handle to release it
+ * through. The exit has to park it as a plain input.
+ *
+ * Asserting the order too, not just that both steps happen: deleting the
+ * driver reconfigures the same pins, so a park done first would be written
+ * over by the teardown that follows it. */
+TEST_CASE("init: mode 4 releases the TX pin when uart_set_pin fails",
+          "[aj_sr04m][init]") {
+  /* Deinit first, then reset: the teardown log has to start empty, and
+   * releasing a sensor left over by an earlier case writes to it. */
+  aj_sr04m_deinit();
+  mocks_reset();
+  g_uart_mock.set_pin_ret = ESP_FAIL;
+
+  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(0, aj_sr04m_get_sensor_count());
+  TEST_ASSERT_EQUAL(GPIO_MODE_INPUT, g_gpio_mock.last_mode);
+
+  const int driver_gone =
+      mocks_teardown_step_index(MOCKS_TEARDOWN_UART_DRIVER_DELETE);
+  const int pin_parked =
+      mocks_teardown_step_index(MOCKS_TEARDOWN_GPIO_PIN_RELEASE);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, driver_gone);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, pin_parked);
+  TEST_ASSERT_LESS_THAN(pin_parked, driver_gone);
+}
+
+/* The counterpart, and the reason the exit above is the only one that
+ * releases anything: uart_param_config() writes baud rate, frame format and
+ * clock source to the peripheral and never touches a pin — routing lives
+ * entirely in uart_set_pin(), which has not run yet. Giving back the driver
+ * is the whole debt. Parking a pin here would reconfigure a pad this call
+ * left exactly as it found it. */
+TEST_CASE("init: mode 4 touches no pin when uart_param_config fails",
+          "[aj_sr04m][init]") {
+  aj_sr04m_deinit();
+  mocks_reset();
+  g_uart_mock.param_config_ret = ESP_FAIL;
+
+  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(1, g_uart_mock.driver_delete_calls);
+  TEST_ASSERT_EQUAL(0, g_gpio_mock.config_calls);
+}
+
+#endif /* hardware UART backend, linux target */
+
 TEST_CASE("trigger: mode 4 sends configured trigger byte",
           "[aj_sr04m][trigger]") {
   mocks_reset();

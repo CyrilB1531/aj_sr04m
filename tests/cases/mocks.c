@@ -111,6 +111,9 @@ void mocks_reset(void) {
 esp_err_t __wrap_uart_driver_delete(uart_port_t port) {
   (void)port;
   g_uart_mock.driver_delete_calls++;
+#if CONFIG_IDF_TARGET_LINUX || CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2
+  mocks_record_teardown(MOCKS_TEARDOWN_UART_DRIVER_DELETE);
+#endif
   return ESP_OK;
 }
 
@@ -187,6 +190,9 @@ esp_err_t __wrap_gpio_config(const gpio_config_t *cfg) {
   if (cfg) {
     g_gpio_mock.last_pin_bit_mask = cfg->pin_bit_mask;
     g_gpio_mock.last_mode = (int)cfg->mode;
+    if (cfg->mode == GPIO_MODE_INPUT) {
+      mocks_record_teardown(MOCKS_TEARDOWN_GPIO_PIN_RELEASE);
+    }
   }
   if (g_gpio_mock.config_ret != ESP_OK) {
     return g_gpio_mock.config_ret;

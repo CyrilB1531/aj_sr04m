@@ -169,13 +169,17 @@ extern struct rmt_mock_state g_rmt_mock;
 /* Teardown steps, recorded in the order the driver performs them. Counters
  * cannot express what matters when a sensor is released: the channel has to
  * stop delivering completions before the semaphore its ISR callback gives is
- * destroyed, and both happening is not the same as them happening in that
- * order. MOCKS_TEARDOWN_SEM_DELETE is only ever recorded on the linux
- * target, where the queue wraps live. */
+ * destroyed, and the UART driver has to be gone before its pins are parked,
+ * since deleting it reconfigures them. Both steps happening is not the same
+ * as them happening in that order. MOCKS_TEARDOWN_SEM_DELETE is only ever
+ * recorded on the linux target, where the queue wraps live. */
 typedef enum {
   MOCKS_TEARDOWN_RMT_DISABLE,
   MOCKS_TEARDOWN_RMT_DEL_CHANNEL,
   MOCKS_TEARDOWN_SEM_DELETE,
+  MOCKS_TEARDOWN_UART_DRIVER_DELETE,
+  /* A gpio_config() asking for GPIO_MODE_INPUT, i.e. a pin being parked. */
+  MOCKS_TEARDOWN_GPIO_PIN_RELEASE,
 } mocks_teardown_step_t;
 
 #define MOCKS_TEARDOWN_MAX_STEPS 32

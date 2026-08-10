@@ -174,6 +174,35 @@ static void aj_sr04m_release_trigger_pin(int trigger_pin) {
   gpio_config(&idle_cfg);
 }
 
+#if AJ_SR04M_MODE >= 3
+/* Unwinds a hardware UART backend that could not be brought up, leaving the
+ * TX pin with nothing driving it.
+ *
+ * Deleting the driver is not enough on its own. ESP-IDF releases the pins
+ * from there, but that release only clears the pin's GPIO output-enable bit,
+ * which a pad routed through the IOMUX ignores — and the IOMUX is the route
+ * uart_set_pin() takes whenever the requested pin is the chip's dedicated
+ * pad for that signal, as GPIO 17 is for UART2 TX on the ESP32, this
+ * component's default TRIG. gpio_config() additionally resets the pad's
+ * function select back to plain GPIO, which is what actually detaches the
+ * peripheral. uart_set_pin() with UART_PIN_NO_CHANGE could not do it either:
+ * that value means "leave this one alone", not "give it back".
+ *
+ * The order is load-bearing. uart_driver_delete() reconfigures the very pins
+ * being parked, so parking has to come last or the teardown writes over it.
+ *
+ * Only TX is parked. RX is an input: any routing that survives feeds the
+ * deleted peripheral's receive signal and drives nothing on the board, while
+ * rewriting that pad would change state this failure may never have created.
+ *
+ * @param uart_num    port whose driver is installed
+ * @param trigger_pin pin handed to uart_set_pin() as TX */
+static void aj_sr04m_release_hw_uart(uart_port_t uart_num, int trigger_pin) {
+  uart_driver_delete(uart_num);
+  aj_sr04m_release_trigger_pin(trigger_pin);
+}
+#endif
+
 /* A capture that fills the buffer was cut short. The RMT engine stops at the
  * end of the memory it was given, logs from its ISR, and still reports the
  * symbols it managed to store — so the tail of the frame is simply missing,
@@ -515,6 +544,10 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
     };
     if (uart_param_config(sensor->uart_num, &uart_config) != ESP_OK) {
       ESP_LOGE(AJ_SR04M_TAG, "Unable to configure UART %d", sensor->uart_num);
+      /* Baud rate, frame format and clock source only, all of them register
+       * writes on the peripheral: pin routing lives entirely in
+       * uart_set_pin(), which has not run yet. Nothing to give back beyond
+       * the driver itself. */
       uart_driver_delete(sensor->uart_num);
       return NULL;
     }
@@ -522,7 +555,10 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
     if (uart_set_pin(sensor->uart_num, trigger_pin, echo_pin,
                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
       ESP_LOGE(AJ_SR04M_TAG, "Unable to set UART pins");
-      uart_driver_delete(sensor->uart_num);
+      /* Routing is applied signal by signal, TX first, so a failure here can
+       * still leave the trigger pin wired to the peripheral. Handing back a
+       * NULL sensor whose pin keeps driving the line is what this releases. */
+      aj_sr04m_release_hw_uart(sensor->uart_num, trigger_pin);
       return NULL;
     }
     ESP_LOGI(AJ_SR04M_TAG, "Sensor UART(HW port %d): tx=%d rx=%d",

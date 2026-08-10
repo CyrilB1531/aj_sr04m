@@ -335,3 +335,43 @@ jobs:
           version: ${{ github.ref_name }}
           namespace: "CyrilB1531"
           api_token: ${{ secrets.IDF_COMPONENT_API_TOKEN}}
+
+  github_release:
+    runs-on: ubuntu-latest
+    # Same gate as the registry upload: a tag whose tests fail publishes
+    # nothing, anywhere. The two are independent jobs rather than steps of
+    # one, so a registry hiccup does not cost the release page and back.
+    needs: [build-component, test, linux-test]
+    if: startsWith(github.event.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      # The tag object itself carries the release notes, so the checkout has
+      # to fetch it rather than the shallow default.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish the GitHub release from the tag message
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Skipped rather than failed when the release already exists: a tag
+        # re-run must stay replayable, and the release page is the one thing
+        # here a maintainer may legitimately have created by hand first.
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "Release ${{ github.ref_name }} already exists, leaving it alone."
+            exit 0
+          fi
+          # The annotated tag is the single source of truth: its subject
+          # line becomes the release title, its body the release notes. A
+          # lightweight tag has neither, so the job fails loudly rather than
+          # publishing an empty release page.
+          title=$(git tag -l --format='%(contents:subject)' "${{ github.ref_name }}")
+          if [ -z "$title" ]; then
+            echo "::error::${{ github.ref_name }} is not an annotated tag; it carries no release notes."
+            exit 1
+          fi
+          gh release create "${{ github.ref_name }}" \
+            --verify-tag \
+            --title "$title" \
+            --notes-from-tag

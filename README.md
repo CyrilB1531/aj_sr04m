@@ -136,7 +136,7 @@ Driver lifecycle and bulk access — the usual entry points:
 - `aj_sr04m_deinit(void)` — delete all instances and return to the pre-initialized state.
 - `aj_sr04m_get_sensor_count(void)` — number of instances actually created.
 - `aj_sr04m_trigger_all(void)` — trigger every sensor.
-- `aj_sr04m_read_all(int16_t *distances, aj_sr04m_dist_status_t *statuses, int max_sensors, int *out_count)` — read every sensor into caller-provided arrays.
+- `aj_sr04m_read_all(int16_t *distances, aj_sr04m_dist_status_t *statuses, int max_sensors, int *out_count)` — read every sensor into caller-provided arrays. Returns `ESP_ERR_INVALID_ARG` on a NULL argument and `ESP_ERR_INVALID_SIZE` when `max_sensors` is below `aj_sr04m_get_sensor_count()`, so the two cases stay distinguishable.
 
 Per-instance control, for pins decided at runtime:
 

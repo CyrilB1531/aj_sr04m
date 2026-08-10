@@ -90,6 +90,10 @@ typedef enum {
  * @param[out] distance distance in millimeters (valid only if return is
  * AJ_SR04M_DIST_OK)
  *
+ * @attention Unlike aj_sr04m_parse_binary_stream() and
+ * aj_sr04m_parse_ascii_frame(), @p data is not checked for NULL: it is
+ * dereferenced as soon as @p len is 4.
+ *
  * @return
  *    - AJ_SR04M_DIST_OK if the frame is valid and the distance is in [200,
  * 4500] mm
@@ -130,7 +134,8 @@ aj_sr04m_dist_status_t aj_sr04m_parse_binary_frame(const uint8_t *data, int len,
  *    - AJ_SR04M_DIST_NO_ECHO if the newest valid frame carries a distance out
  * of [200, 4500] mm
  *    - AJ_SR04M_DIST_BAD_CHECKSUM if every candidate frame failed its checksum
- *    - AJ_SR04M_DIST_BAD_FRAME if no candidate frame was found at all
+ *    - AJ_SR04M_DIST_BAD_FRAME if @p data is NULL, if @p len is below the
+ * 4-byte frame length, or if no candidate frame was found at all
  */
 aj_sr04m_dist_status_t aj_sr04m_parse_binary_stream(const uint8_t *data,
                                                     int len, int16_t *distance);
@@ -148,7 +153,8 @@ aj_sr04m_dist_status_t aj_sr04m_parse_binary_stream(const uint8_t *data,
  * @return
  *    - AJ_SR04M_DIST_OK if the "Gap=...mm" pattern is found and the distance is
  * in [200, 4500] mm
- *    - AJ_SR04M_DIST_BAD_FRAME if the pattern is missing or unparseable
+ *    - AJ_SR04M_DIST_BAD_FRAME if @p data is NULL, or the pattern is missing
+ * or unparseable
  *    - AJ_SR04M_DIST_NO_ECHO if the parsed distance is out of [200, 4500] mm
  */
 aj_sr04m_dist_status_t aj_sr04m_parse_ascii_frame(const char *data,
@@ -158,13 +164,14 @@ aj_sr04m_dist_status_t aj_sr04m_parse_ascii_frame(const char *data,
  * @brief Initialize the AJ-SR04M driver.
  *
  * This function must be called once before creating any sensor instances.
- * It initializes the global driver state (GPIO, RMT, or UART hardware as
- * needed).
+ * It creates every sensor described by Kconfig together with the GPIO, RMT or
+ * UART resources each one needs.
  *
  * @return
- *    - ESP_OK on success
- *    - ESP_ERR_NO_MEM if internal allocations fail
- *    - the error code returned by the hardware driver on failure
+ *    - ESP_OK on success, or if the driver is already initialized
+ *    - ESP_ERR_INVALID_STATE if a Kconfig-described sensor could not be
+ * created, for any of the reasons listed by aj_sr04m_new(); the sensors
+ * already created are released and the driver stays uninitialized
  */
 esp_err_t aj_sr04m_init(void);
 
@@ -193,7 +200,9 @@ esp_err_t aj_sr04m_deinit(void);
  *
  * @return
  *    - handle (non-NULL) on success
- *    - NULL if allocation fails or if hardware resources are exhausted
+ *    - NULL if aj_sr04m_init() has not been called yet, if the
+ * AJ_SR04M_MAX_SENSORS slots are all in use, if a pin cannot be configured, or
+ * if allocation of the RMT buffer, RMT channel, semaphore or UART driver fails
  *
  * @note
  *    - Modes 1-2 (GPIO): each instance requires a dedicated RMT RX channel.
@@ -253,8 +262,10 @@ esp_err_t aj_sr04m_trigger(aj_sr04m_handle_t handle);
  *    - AJ_SR04M_DIST_OK if the measurement is valid
  *    - AJ_SR04M_DIST_NO_ECHO if no echo was detected
  *    - AJ_SR04M_DIST_BAD_CHECKSUM if the UART checksum is invalid
- *    - AJ_SR04M_DIST_BAD_FRAME if the UART frame is malformed, or if the RMT
- * capture filled its buffer and was therefore cut short
+ *    - AJ_SR04M_DIST_BAD_FRAME if @p handle or @p distance is NULL, if the
+ * sensor is not initialized, if the UART frame is malformed, if the RMT
+ * capture filled its buffer and was therefore cut short, or if a hardware UART
+ * backend read nothing before its reply timeout
  */
 aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
                                               int16_t *distance);
@@ -313,7 +324,10 @@ esp_err_t aj_sr04m_trigger_all(void);
  *
  * @return
  *    - ESP_OK on success
- *    - ESP_ERR_INVALID_ARG if arrays are NULL or max_sensors is too small
+ *    - ESP_ERR_INVALID_ARG if @p distances, @p statuses or @p out_sensor_count
+ * is NULL
+ *    - ESP_ERR_INVALID_SIZE if @p max_sensors is below the number of
+ * configured sensors reported by aj_sr04m_get_sensor_count()
  *    - ESP_ERR_INVALID_STATE if the driver is not initialized or no sensors are
  * configured
  */

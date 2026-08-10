@@ -77,6 +77,14 @@ struct gpio_mock_state {
    * GPIO_MODE_INPUT to check that a deleted or failed sensor stopped
    * driving its trigger pin. */
   int last_mode;
+
+/* Every level driven, in order, so a test can read back the waveform a
+ * bit-banged UART frame put on the wire instead of only its last edge.
+ * Recording stops once full — a saturated buffer shows up as a length
+ * mismatch rather than as wrapped-around garbage. */
+#define GPIO_MOCK_MAX_LEVELS 32
+  int level_seq[GPIO_MOCK_MAX_LEVELS];
+  int level_seq_len;
 };
 
 extern struct gpio_mock_state g_gpio_mock;
@@ -86,6 +94,25 @@ extern struct gpio_mock_state g_gpio_mock;
 struct esp_rom_mock_state {
   int delay_us_calls;
   uint32_t last_delay_us;
+
+/* Every requested delay, in order, so a test can check how a bit-banged
+ * frame re-planned its edges rather than only how long the last one was. */
+#define ESP_ROM_MOCK_MAX_DELAYS 32
+  uint32_t delay_seq[ESP_ROM_MOCK_MAX_DELAYS];
+  int delay_seq_len;
+
+  /* Virtual microsecond clock, advanced by every delay served. On the linux
+   * target it also backs esp_timer_get_time(), which has no implementation
+   * there — so code that busy-waits then reads the clock sees time move the
+   * way it would on the chip, deterministically. */
+  int64_t now_us;
+
+  /* One-shot overrun injection: `overrun_us` extra microseconds are charged
+   * to the virtual clock on delay call number `overrun_at_call` (0-based),
+   * standing in for an ISR that ran while the frame was in flight. Inert
+   * while overrun_us is 0. */
+  uint32_t overrun_us;
+  int overrun_at_call;
 };
 
 extern struct esp_rom_mock_state g_esp_rom_mock;

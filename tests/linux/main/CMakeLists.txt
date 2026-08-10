@@ -24,7 +24,7 @@ idf_component_register(
     # rmt_rx_done_event_data_t the driver sees. A local stub used to stand in
     # here, and its fields were declared in the opposite order: the driver
     # read the symbol pointer as the symbol count and never noticed.
-    REQUIRES unity aj_sr04m esp_driver_uart esp_driver_rmt
+    REQUIRES unity aj_sr04m esp_driver_uart esp_driver_rmt esp_timer
     WHOLE_ARCHIVE
 )
 

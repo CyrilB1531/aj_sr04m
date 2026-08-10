@@ -21,7 +21,7 @@ set(EXTRA_COMPONENT_DIRS "../..")
 # pulls in nvs_flash/mbedtls/lwip/esp_http_*, and one of them (nvs_flash)
 # hard-requires libbsd-dev that we cannot assume is installed on the host.
 set(COMPONENTS main aj_sr04m unity esp_driver_uart esp_driver_gpio
-    esp_driver_rmt esp_rom log esp_common)
+    esp_driver_rmt esp_rom esp_timer log esp_common)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(MINIMAL_BUILD ON)

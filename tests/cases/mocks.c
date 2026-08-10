@@ -177,6 +177,9 @@ esp_err_t __wrap_gpio_set_level(gpio_num_t pin, uint32_t level) {
   g_gpio_mock.set_level_calls++;
   g_gpio_mock.last_pin = (int)pin;
   g_gpio_mock.last_level = (int)level;
+  if (g_gpio_mock.level_seq_len < GPIO_MOCK_MAX_LEVELS) {
+    g_gpio_mock.level_seq[g_gpio_mock.level_seq_len++] = (int)level;
+  }
   if (g_gpio_mock.set_level_ret != ESP_OK) {
     return g_gpio_mock.set_level_ret;
   }
@@ -192,8 +195,18 @@ esp_err_t __wrap_gpio_set_level(gpio_num_t pin, uint32_t level) {
  * placement the fetch faults with LoadProhibited. The real ROM
  * implementation must run so cache/PMU timing is preserved. */
 void IRAM_ATTR __wrap_esp_rom_delay_us(uint32_t us) {
-  g_esp_rom_mock.delay_us_calls++;
+  const int call = g_esp_rom_mock.delay_us_calls++;
   g_esp_rom_mock.last_delay_us = us;
+  if (g_esp_rom_mock.delay_seq_len < ESP_ROM_MOCK_MAX_DELAYS) {
+    g_esp_rom_mock.delay_seq[g_esp_rom_mock.delay_seq_len++] = us;
+  }
+
+  g_esp_rom_mock.now_us += us;
+  if (g_esp_rom_mock.overrun_us > 0 && call == g_esp_rom_mock.overrun_at_call) {
+    g_esp_rom_mock.now_us += g_esp_rom_mock.overrun_us;
+    g_esp_rom_mock.overrun_us = 0;
+  }
+
   __real_esp_rom_delay_us(us);
 }
 
@@ -346,6 +359,16 @@ esp_err_t __wrap_rmt_receive(rmt_channel_handle_t channel, void *buffer,
 #endif /* hardware-driver mocks (linux all modes, ESP modes 1-2) */
 
 #if CONFIG_IDF_TARGET_LINUX
+
+#include "esp_timer.h"
+
+/* ESP-IDF registers esp_timer on the linux target with headers only — no
+ * implementation — so the software UART's edge scheduling would not link
+ * here. Backing it with the virtual clock the delay mock advances is also
+ * what makes that scheduling testable: the code busy-waits, the clock moves
+ * by exactly what it asked for, and an injected overrun is visible in the
+ * next delay it requests. */
+int64_t esp_timer_get_time(void) { return g_esp_rom_mock.now_us; }
 
 struct heap_mock_state g_heap_mock;
 

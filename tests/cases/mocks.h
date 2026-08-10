@@ -13,6 +13,8 @@
 #include "esp_err.h"
 #include "sdkconfig.h"
 
+#include "freertos/FreeRTOS.h"
+
 #include "driver/uart.h"
 
 #include "aj_sr04m.h"
@@ -43,6 +45,11 @@ struct uart_mock_state {
   esp_err_t set_pin_ret;
   int write_bytes_ret;
   int read_bytes_ret;
+
+  /* Ticks the last uart_read_bytes() was willing to wait. The read window is
+   * what decides whether a free-running module's next frame is still inside
+   * it, so it is asserted on rather than assumed. */
+  TickType_t last_read_ticks;
 
   uart_port_t last_port;
   uart_config_t last_config;

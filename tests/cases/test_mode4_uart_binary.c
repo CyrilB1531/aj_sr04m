@@ -19,6 +19,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
 #include "unity.h"
 
 #include "aj_sr04m.h"
@@ -136,6 +137,23 @@ TEST_CASE("read: mode 4 BAD_FRAME on UART read returning 0 bytes",
   TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
   int16_t dist = 0;
   TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME, mocks_read_one(&dist));
+}
+
+/* Companion to the mode 3 case of #45: modes 3 and 4 share the hardware
+ * backend's binary read, which used to open the same 20 ms window for both.
+ * Mode 4 waits on a prompted reply, which the module sends ~100-200 ms after
+ * the trigger byte — so its window must cover the reply latency, not a
+ * stream period. */
+TEST_CASE("read: mode 4 waits out the module reply latency",
+          "[aj_sr04m][read]") {
+  mocks_reset();
+  g_uart_mock.read_bytes_ret = 0;
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+  int16_t dist = 0;
+  mocks_read_one(&dist);
+
+  TEST_ASSERT_EQUAL(1, g_uart_mock.read_bytes_calls);
+  TEST_ASSERT_GREATER_OR_EQUAL(pdMS_TO_TICKS(200), g_uart_mock.last_read_ticks);
 }
 
 /* Regression for #17. A reply that arrives after its read has timed out

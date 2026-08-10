@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
 #include "unity.h"
 
 #include "aj_sr04m.h"
@@ -113,6 +114,31 @@ TEST_CASE("read: mode 3 BAD_FRAME on UART read returning 0 bytes",
   TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
   int16_t dist = 0;
   TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME, mocks_read_one(&dist));
+  /* A window that expired with nothing in it is still a bad frame: the read
+   * cannot tell an empty buffer from a corrupt one, so the fix below widens
+   * the window rather than changing what an empty one reports. */
+  TEST_ASSERT_EQUAL(1, g_uart_mock.read_bytes_calls);
+}
+
+/* Regression for #45. Mode 3 is autonomous: the module streams a frame about
+ * every 120 ms and nothing the driver does brings the next one forward. The
+ * read used to open a 20 ms window, which lands between two frames far more
+ * often than it lands on one — and an empty read is reported as BAD_FRAME,
+ * i.e. a malformed-frame status for a sensor working exactly as specified.
+ * The window must be able to outlast a whole stream period. */
+TEST_CASE("read: mode 3 waits at least one stream period for a frame",
+          "[aj_sr04m][read]") {
+  mocks_reset();
+  g_uart_mock.read_bytes_ret = 0;
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+  int16_t dist = 0;
+  mocks_read_one(&dist);
+
+  TEST_ASSERT_EQUAL(1, g_uart_mock.read_bytes_calls);
+  TEST_ASSERT_GREATER_OR_EQUAL(pdMS_TO_TICKS(120), g_uart_mock.last_read_ticks);
+  /* Upper bound: aj_sr04m_read_all() reads sensors one after another, so a
+   * window nobody bounded multiplies by the sensor count on a silent bus. */
+  TEST_ASSERT_LESS_OR_EQUAL(pdMS_TO_TICKS(300), g_uart_mock.last_read_ticks);
 }
 
 /* Regression for #15. An autonomous module streams a frame every ~100 ms

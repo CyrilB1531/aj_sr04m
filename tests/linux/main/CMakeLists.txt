@@ -35,6 +35,7 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=uart_set_pin"
     "-Wl,--wrap=uart_write_bytes"
     "-Wl,--wrap=uart_read_bytes"
+    "-Wl,--wrap=uart_flush_input"
 )
 
 # GPIO + RMT + esp_rom wraps. On the linux target esp_driver_gpio and

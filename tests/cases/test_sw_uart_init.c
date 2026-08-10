@@ -99,6 +99,24 @@ TEST_CASE("sw uart trigger: arms the RMT receiver in every UART mode",
 #endif
 }
 
+/* Regression for #20, software-backend side. Arming and prompting are two
+ * steps here, and a failed arm used to let the second one run anyway: the
+ * module answered into a receiver that had never been started, and the read
+ * reported NO_ECHO as though the tank were empty. Both sensors fail to arm,
+ * so the batch has nothing left to report. */
+TEST_CASE("sw uart trigger: reports the failure when RMT cannot be armed",
+          "[aj_sr04m][sw_uart][trigger]") {
+  mocks_reset();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+  const int written_before = g_uart_mock.write_bytes_calls;
+  g_rmt_mock.receive_ret = ESP_FAIL;
+
+  TEST_ASSERT_EQUAL(ESP_FAIL, aj_sr04m_trigger_all());
+  /* Nothing was prompted: the module stays quiet instead of answering into
+   * a receiver that is not listening. */
+  TEST_ASSERT_EQUAL(written_before, g_uart_mock.write_bytes_calls);
+}
+
 /* Same two exits on the software backend, which allocates and creates its
  * own capture resources rather than sharing the modes 1-2 ones. */
 TEST_CASE("sw uart init: fails when the RX buffer allocation fails",

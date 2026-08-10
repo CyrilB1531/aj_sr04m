@@ -222,12 +222,24 @@ void aj_sr04m_delete(aj_sr04m_handle_t handle);
  *
  * Behavior depending on AJ_SR04M_MODE:
  *    - modes 1 and 2: arm RMT RX, then pulse the TRIGGER pin
- *    - modes 4 and 5: send the trigger byte over the UART
- *    - mode 3: no-op (the module emits frames autonomously)
+ *    - modes 4 and 5: arm RMT RX on a software UART port, then send the
+ * trigger byte over the UART
+ *    - mode 3: arm RMT RX on a software UART port; no-op on a hardware UART
+ * port (the module emits frames autonomously and the UART driver buffers them)
+ *
+ * @note A sensor must be triggered again before every aj_sr04m_read_distance()
+ * call, mode 3 on a software UART port included.
  *
  * @param handle Handle returned by aj_sr04m_new()
+ *
+ * @return
+ *    - ESP_OK if the sensor was triggered
+ *    - ESP_ERR_INVALID_ARG if @p handle is NULL
+ *    - ESP_ERR_INVALID_STATE if the sensor is not initialized
+ *    - the error reported by rmt_receive() if the capture could not be armed,
+ * in which case no trigger was emitted
  */
-void aj_sr04m_trigger(aj_sr04m_handle_t handle);
+esp_err_t aj_sr04m_trigger(aj_sr04m_handle_t handle);
 
 /**
  * @brief Read the distance measured by a specific sensor instance.
@@ -277,10 +289,15 @@ aj_sr04m_handle_t aj_sr04m_get_handle(int index);
 /**
  * @brief Trigger a distance measurement on all configured sensors.
  *
+ * Sensors that fail to trigger do not stop the ones after them: the whole set
+ * is walked before an error surfaces.
+ *
  * @return
  *    - ESP_OK if at least one sensor was triggered successfully
  *    - ESP_ERR_INVALID_STATE if the driver is not initialized or no sensors are
  * configured
+ *    - the last error reported by aj_sr04m_trigger() if no sensor could be
+ * triggered at all
  */
 esp_err_t aj_sr04m_trigger_all(void);
 

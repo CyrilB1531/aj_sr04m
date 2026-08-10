@@ -181,6 +181,8 @@ Modules mounted side by side hear each other's 40 kHz burst. Fired at the same i
 
 The driver validates measurements within a **200 mm – 4500 mm** window (`AJ_SR04M_DIST_MIN_VALID_MM` / `AJ_SR04M_DIST_MAX_VALID_MM` in `src/aj_sr04m.c`). The AJ-SR04M datasheet advertises up to 8 m on some revisions and the JSN-SR04T up to 6 m, but accuracy degrades significantly past 4.5 m on the modules tested — adjust the upper bound if your module proves reliable further out.
 
+Reaching the far end of that window costs time in modes 1-2, and `aj_sr04m_read_distance()` blocks for it. The RMT capture is not over when the echo falls: it ends once the line has stayed idle for 30 ms, so a 4.5 m target — 26 ms of echo pulse — is only reported some 56 ms after the trigger. The read allows 100 ms for that; budget accordingly when polling several sensors in a row.
+
 Out-of-range conditions are reported as `AJ_SR04M_DIST_NO_ECHO`. Different revisions emit different "no echo" sentinels: some AJ-SR04M units return a value greater than 4500 mm (e.g. `6016`), the JSN-SR04T datasheet specifies plain `0`. Both are caught by the [200, 4500] window check.
 
 ## Tests

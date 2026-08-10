@@ -75,7 +75,8 @@ typedef enum {
   AJ_SR04M_DIST_NO_ECHO, /**< no echo: too close, too far, or absorbing material
                           */
   AJ_SR04M_DIST_BAD_CHECKSUM, /**< frame received but checksum is invalid */
-  AJ_SR04M_DIST_BAD_FRAME, /**< malformed frame (incorrect header or length) */
+  AJ_SR04M_DIST_BAD_FRAME,    /**< malformed frame (incorrect header or length),
+                                 or a capture cut short by a full buffer */
 } aj_sr04m_dist_status_t;
 
 /**
@@ -252,7 +253,8 @@ esp_err_t aj_sr04m_trigger(aj_sr04m_handle_t handle);
  *    - AJ_SR04M_DIST_OK if the measurement is valid
  *    - AJ_SR04M_DIST_NO_ECHO if no echo was detected
  *    - AJ_SR04M_DIST_BAD_CHECKSUM if the UART checksum is invalid
- *    - AJ_SR04M_DIST_BAD_FRAME if the UART frame is malformed
+ *    - AJ_SR04M_DIST_BAD_FRAME if the UART frame is malformed, or if the RMT
+ * capture filled its buffer and was therefore cut short
  */
 aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
                                               int16_t *distance);

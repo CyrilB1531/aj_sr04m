@@ -117,6 +117,65 @@ TEST_CASE("sw uart trigger: reports the failure when RMT cannot be armed",
   TEST_ASSERT_EQUAL(written_before, g_uart_mock.write_bytes_calls);
 }
 
+/* The frame the module would put on the wire for a 1500 mm reading, in the
+ * shape the configured mode expects. The mock encodes it as a 9600 8N1
+ * capture, so these two cases exercise the whole software path: RMT symbols
+ * in, decoded bytes out, parsed distance back. */
+#if CONFIG_AJ_SR04M_MODE_5
+static const uint8_t k_frame_1500mm[] = "Gap=1500 mm\r\n";
+#define K_FRAME_LEN (sizeof(k_frame_1500mm) - 1) /* drop the NUL */
+#else
+/* header | dist_H | dist_L | checksum, 1500 = 0x05DC */
+static const uint8_t k_frame_1500mm[] = {0xFF, 0x05, 0xDC, 0xE0};
+#define K_FRAME_LEN sizeof(k_frame_1500mm)
+#endif
+
+/* This fragment configures two sensors, so mocks_read_one() — which passes a
+ * one-slot array to aj_sr04m_read_all() — would be turned away with
+ * ESP_ERR_INVALID_SIZE before any decoding happened. Read the first sensor
+ * through its own handle instead. */
+static aj_sr04m_dist_status_t read_first_sensor(int16_t *dist) {
+  aj_sr04m_handle_t handle = aj_sr04m_get_handle(0);
+  TEST_ASSERT_NOT_NULL(handle);
+  return aj_sr04m_read_distance(handle, dist);
+}
+
+TEST_CASE("sw uart read: decodes a captured frame", "[aj_sr04m][sw_uart]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+
+  g_rmt_mock.fire_pulse_on_receive = true;
+  g_rmt_mock.fire_uart_bytes = k_frame_1500mm;
+  g_rmt_mock.fire_uart_len = K_FRAME_LEN;
+
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_trigger_all());
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK, read_first_sensor(&dist));
+  TEST_ASSERT_EQUAL_INT16(1500, dist);
+}
+
+/* Regression for #21. Same frame, same decode — the one thing that changes
+ * is the completion reporting a capture that reached the end of the buffer.
+ * The RMT engine stops there and hands back what it stored, so the tail is
+ * missing and whatever decodes is a fragment. The driver must refuse it
+ * rather than hand back the distance the fragment happens to yield. */
+TEST_CASE("sw uart read: BAD_FRAME when the capture fills the buffer",
+          "[aj_sr04m][sw_uart]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+
+  g_rmt_mock.fire_pulse_on_receive = true;
+  g_rmt_mock.fire_uart_bytes = k_frame_1500mm;
+  g_rmt_mock.fire_uart_len = K_FRAME_LEN;
+  g_rmt_mock.fire_capture_fills_buffer = true;
+
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_trigger_all());
+  int16_t dist = -1;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME, read_first_sensor(&dist));
+}
+
 /* Same two exits on the software backend, which allocates and creates its
  * own capture resources rather than sharing the modes 1-2 ones. */
 TEST_CASE("sw uart init: fails when the RX buffer allocation fails",

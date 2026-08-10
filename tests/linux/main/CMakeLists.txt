@@ -70,7 +70,12 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
 # target intercepts allocations IDF makes during startup, long before any
 # test runs. The mocks filter by allocation size and queue type so that even
 # here they only ever fire for the driver's own calls.
+#
+# vQueueDelete is the other half of that pair: vSemaphoreDelete() is a macro
+# over it, and intercepting it is what lets a test see *when* the ISR's
+# semaphore is destroyed relative to the RMT channel being disabled.
 target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=malloc"
     "-Wl,--wrap=xQueueGenericCreate"
+    "-Wl,--wrap=vQueueDelete"
 )

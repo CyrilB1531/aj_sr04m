@@ -166,6 +166,38 @@ struct rmt_mock_state {
 
 extern struct rmt_mock_state g_rmt_mock;
 
+/* Teardown steps, recorded in the order the driver performs them. Counters
+ * cannot express what matters when a sensor is released: the channel has to
+ * stop delivering completions before the semaphore its ISR callback gives is
+ * destroyed, and both happening is not the same as them happening in that
+ * order. MOCKS_TEARDOWN_SEM_DELETE is only ever recorded on the linux
+ * target, where the queue wraps live. */
+typedef enum {
+  MOCKS_TEARDOWN_RMT_DISABLE,
+  MOCKS_TEARDOWN_RMT_DEL_CHANNEL,
+  MOCKS_TEARDOWN_SEM_DELETE,
+} mocks_teardown_step_t;
+
+#define MOCKS_TEARDOWN_MAX_STEPS 32
+
+struct teardown_mock_state {
+  mocks_teardown_step_t steps[MOCKS_TEARDOWN_MAX_STEPS];
+  int steps_len;
+};
+
+extern struct teardown_mock_state g_teardown_mock;
+
+/**
+ * @brief Position of a teardown step in the recorded sequence.
+ *
+ * @param step step to look for
+ *
+ * @return
+ *    - the index of its first occurrence
+ *    - -1 if it was never recorded
+ */
+int mocks_teardown_step_index(mocks_teardown_step_t step);
+
 #endif /* hardware-driver mocks (linux all modes, ESP modes 1-2) */
 
 #if CONFIG_IDF_TARGET_LINUX

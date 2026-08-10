@@ -67,6 +67,34 @@ TEST_CASE("sw uart init: fails on rmt_enable error",
   assert_init_fails_and_releases_tx_pin();
 }
 
+/* Regression for #38, software-backend side — the one that made the window
+ * reachable in ordinary use, mode 3 especially: the module streams
+ * unprompted, so a capture is in flight essentially all the time and a
+ * shutdown lands in the middle of one. Deleting rx_done_sem while the
+ * channel was still enabled left rmt_rx_done_cb() giving a freed handle from
+ * an ISR. The channel must be disabled and deleted first. */
+TEST_CASE("sw uart deinit: disables the RMT channel before freeing what the "
+          "ISR touches",
+          "[aj_sr04m][sw_uart][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+
+  /* Only the release matters here, not the semaphore setup created. */
+  g_teardown_mock.steps_len = 0;
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_deinit());
+
+  const int disabled = mocks_teardown_step_index(MOCKS_TEARDOWN_RMT_DISABLE);
+  const int deleted = mocks_teardown_step_index(MOCKS_TEARDOWN_RMT_DEL_CHANNEL);
+  const int sem_freed = mocks_teardown_step_index(MOCKS_TEARDOWN_SEM_DELETE);
+
+  TEST_ASSERT_GREATER_OR_EQUAL(0, disabled);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, deleted);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, sem_freed);
+  TEST_ASSERT_LESS_THAN(sem_freed, disabled);
+  TEST_ASSERT_LESS_THAN(sem_freed, deleted);
+}
+
 TEST_CASE("sw uart deinit: releases the TX pin", "[aj_sr04m][sw_uart][init]") {
   mocks_reset();
   TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());

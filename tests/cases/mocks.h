@@ -118,8 +118,23 @@ struct rmt_mock_state {
   bool fire_pulse_on_receive;
   uint32_t fire_pulse_high_us;
 
+  /* Bytes to synthesise as a 9600 8N1 line capture instead of the single
+   * echo pulse, for the software UART backend. The mock encodes them the way
+   * the module would drive the wire — start bit, 8 data bits LSB first, stop
+   * bit — and merges identical neighbouring levels into one run, as the RMT
+   * hardware does. Points at caller-owned memory that must outlive the
+   * receive. */
+  const uint8_t *fire_uart_bytes;
+  size_t fire_uart_len;
+
+  /* Report the completion as filling the whole buffer, which is how a
+   * truncated capture reaches the driver: the RMT engine stops at the end of
+   * its memory and hands back everything it stored. */
+  bool fire_capture_fills_buffer;
+
+  /* The driver registers the same function for every sensor; the context
+   * that tells them apart is kept per channel inside mocks.c. */
   aj_sr04m_rmt_rx_done_cb_t on_recv_done;
-  void *on_recv_done_user_data;
 };
 
 extern struct rmt_mock_state g_rmt_mock;

@@ -204,6 +204,27 @@ TEST_CASE("trigger: reports the failure when RMT cannot be armed",
   TEST_ASSERT_EQUAL(0, g_esp_rom_mock.delay_us_calls);
 }
 
+/* Regression for #21. The RMT engine stops at the end of the memory it was
+ * given, logs from its ISR, and still reports what it stored — so a capture
+ * that reaches capacity is missing its tail. Decoding it yields a plausible
+ * measurement built from a fragment: here the very pulse that reads 1500 mm
+ * in the case above must be refused, on the sole ground that the capture
+ * filled the buffer. */
+TEST_CASE("read: BAD_FRAME when the capture fills the buffer",
+          "[aj_sr04m][read]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  aj_sr04m_init();
+
+  g_rmt_mock.fire_pulse_on_receive = true;
+  g_rmt_mock.fire_pulse_high_us = 8746; /* would decode to ~1500 mm */
+  g_rmt_mock.fire_capture_fills_buffer = true;
+
+  aj_sr04m_trigger_all();
+  int16_t dist = -1;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME, mocks_read_one(&dist));
+}
+
 TEST_CASE("trigger: rejects a NULL handle", "[aj_sr04m][trigger]") {
   mocks_reset();
   TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, aj_sr04m_trigger(NULL));

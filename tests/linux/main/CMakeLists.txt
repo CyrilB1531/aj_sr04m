@@ -19,7 +19,12 @@ idf_component_register(
         "${CASES}/test_mode5_uart_ascii.c"
         "${CASES}/test_multi_sensor.c"
     INCLUDE_DIRS "${CASES}" "${CMAKE_CURRENT_LIST_DIR}/../../../priv_include"
-    REQUIRES unity aj_sr04m esp_driver_uart
+    # esp_driver_rmt has no sources on the linux target but still exports its
+    # public headers, so the mocks build against the very same
+    # rmt_rx_done_event_data_t the driver sees. A local stub used to stand in
+    # here, and its fields were declared in the opposite order: the driver
+    # read the symbol pointer as the symbol count and never noticed.
+    REQUIRES unity aj_sr04m esp_driver_uart esp_driver_rmt
     WHOLE_ARCHIVE
 )
 

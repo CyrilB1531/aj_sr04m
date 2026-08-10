@@ -40,6 +40,18 @@
 /* RMT capture parameters: shared by modes 1-2 (echo) and the modes 4-5
  * software UART backend (frame capture). */
 #define AJ_SR04M_RMT_RESOLUTION_HZ 1000000U /* 1 MHz -> 1 us per RMT tick */
+/* Capture capacity, in RMT symbols. Each symbol carries two level runs, so
+ * 64 symbols hold 128 of them. The longest frame captured here is the mode 5
+ * ASCII payload "Gap=XXXX mm\r\n": 13 bytes at 9600 8N1 is 130 line bits,
+ * but identical neighbouring bits merge into one run, and over every digit
+ * combination the worst case is 86 runs — 43 symbols. A binary frame of
+ * modes 3-4 needs 15, an echo pulse of modes 1-2 needs two.
+ *
+ * 64 is also the ESP32's RMT memory block size, and its RX path has no
+ * ping-pong support: a capture there cannot outgrow the blocks reserved when
+ * the channel was created, so asking for more takes a second block away from
+ * another channel. The margin above is what buys the fixed size; a capture
+ * that reaches capacity is treated as truncated rather than decoded. */
 #define AJ_SR04M_RMT_NUM_SYMBOLS 64
 #define AJ_SR04M_RMT_TIMEOUT_MS 50     /* > round-trip time at max range */
 #define AJ_SR04M_RMT_IDLE_NS 30000000U /* 30 ms idle threshold */
@@ -149,6 +161,24 @@ static void aj_sr04m_release_trigger_pin(int trigger_pin) {
       .intr_type = GPIO_INTR_DISABLE,
   };
   gpio_config(&idle_cfg);
+}
+
+/* A capture that fills the buffer was cut short. The RMT engine stops at the
+ * end of the memory it was given, logs from its ISR, and still reports the
+ * symbols it managed to store — so the tail of the frame is simply missing,
+ * and what remains decodes into a plausible-looking but wrong measurement.
+ * An exactly-full capture is indistinguishable from a truncated one, hence
+ * the margin the buffer is sized with: reaching capacity means something is
+ * wrong (a floating echo pin oscillating, a module streaming without an idle
+ * gap), not that a frame happened to fit. */
+static bool aj_sr04m_capture_truncated(const aj_sr04m_sensor_t *sensor) {
+  if (sensor->rx_num_symbols < AJ_SR04M_RMT_NUM_SYMBOLS)
+    return false;
+
+  ESP_LOGE(AJ_SR04M_TAG,
+           "Capture truncated on echo pin %d: %u symbols fill the buffer",
+           sensor->echo_pin, (unsigned)sensor->rx_num_symbols);
+  return true;
 }
 
 #if AJ_SR04M_MODE < 3
@@ -708,6 +738,9 @@ aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
                      pdMS_TO_TICKS(AJ_SR04M_RMT_TIMEOUT_MS)) != pdTRUE)
     return AJ_SR04M_DIST_NO_ECHO;
 
+  if (aj_sr04m_capture_truncated(sensor))
+    return AJ_SR04M_DIST_BAD_FRAME;
+
   uint32_t pulse_us = extract_high_pulse_us(sensor);
   if (pulse_us == 0)
     return AJ_SR04M_DIST_NO_ECHO;
@@ -726,6 +759,10 @@ aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
                        pdMS_TO_TICKS(AJ_SR04M_SW_UART_CAPTURE_TIMEOUT_MS)) !=
         pdTRUE)
       return AJ_SR04M_DIST_NO_ECHO;
+
+    if (aj_sr04m_capture_truncated(sensor))
+      return AJ_SR04M_DIST_BAD_FRAME;
+
     uint8_t bytes[64];
     size_t n = aj_sr04m_sw_uart_decode(
         sensor->rx_buffer, sensor->rx_num_symbols, bytes, sizeof(bytes));

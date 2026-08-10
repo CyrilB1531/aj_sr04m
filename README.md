@@ -142,7 +142,7 @@ Per-instance control, for pins decided at runtime:
 
 - `aj_sr04m_new(int trigger_pin, int echo_pin, uint8_t trigger_byte, int uart_num)` — create one instance; returns `NULL` if resources are exhausted. `uart_num` in `[0, SOC_UART_NUM)` picks a hardware UART, any other value selects the software backend.
 - `aj_sr04m_delete(aj_sr04m_handle_t handle)` — release that instance.
-- `aj_sr04m_trigger(aj_sr04m_handle_t handle)` — arm RMT and pulse TRIG (modes 1-2), send the trigger byte (modes 4-5), or no-op (mode 3, autonomous).
+- `aj_sr04m_trigger(aj_sr04m_handle_t handle)` — arm RMT and pulse TRIG (modes 1-2), arm RMT on a software UART port then send the trigger byte (modes 4-5), or arm RMT alone (mode 3, autonomous — a no-op on a hardware UART port). Returns `ESP_OK`, or an error when the capture could not be armed, in which case nothing was triggered.
 - `aj_sr04m_read_distance(aj_sr04m_handle_t handle, int16_t *distance)` — return a measurement status; on success `*distance` holds the value in millimeters.
 
 Frame parsers, usable without hardware:

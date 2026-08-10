@@ -183,6 +183,32 @@ TEST_CASE("trigger: drops a completion left by a timed-out cycle",
   TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO, mocks_read_one(&dist));
 }
 
+/* Regression for #20. A failed rmt_receive() used to be discarded: the pulse
+ * went out with no receiver listening, so the read that followed timed out and
+ * reported NO_ECHO — a driver fault wearing the same status as a sensor
+ * pointing at open air. The trigger must now fail loudly and leave TRIG
+ * untouched. */
+TEST_CASE("trigger: reports the failure when RMT cannot be armed",
+          "[aj_sr04m][trigger]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  aj_sr04m_init();
+
+  const int gpio_calls_before = g_gpio_mock.set_level_calls;
+  g_rmt_mock.receive_ret = ESP_FAIL;
+
+  /* The only sensor failed to arm, so the batch has nothing to report. */
+  TEST_ASSERT_EQUAL(ESP_FAIL, aj_sr04m_trigger_all());
+  /* No burst went out: the pin never moved. */
+  TEST_ASSERT_EQUAL(gpio_calls_before, g_gpio_mock.set_level_calls);
+  TEST_ASSERT_EQUAL(0, g_esp_rom_mock.delay_us_calls);
+}
+
+TEST_CASE("trigger: rejects a NULL handle", "[aj_sr04m][trigger]") {
+  mocks_reset();
+  TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, aj_sr04m_trigger(NULL));
+}
+
 #if CONFIG_IDF_TARGET_LINUX
 /* The two aj_sr04m_new() exits no driver mock can reach. They matter more
  * than their length suggests: each one runs the cleanup that releases what

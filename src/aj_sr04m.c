@@ -116,7 +116,7 @@ static void aj_sr04m_release_rmt_resources(aj_sr04m_sensor_t *sensor,
  * decode rx_buffer while RMT is concurrently writing the new capture into it.
  * The result is a torn buffer read with an rx_num_symbols belonging to
  * neither capture — and the parsers may well accept it. */
-static void aj_sr04m_arm_rmt_capture(aj_sr04m_sensor_t *sensor) {
+static esp_err_t aj_sr04m_arm_rmt_capture(aj_sr04m_sensor_t *sensor) {
   xSemaphoreTake(sensor->rx_done_sem, 0);
 
   rmt_receive_config_t rx_cfg = {
@@ -124,8 +124,18 @@ static void aj_sr04m_arm_rmt_capture(aj_sr04m_sensor_t *sensor) {
       .signal_range_max_ns =
           AJ_SR04M_RMT_IDLE_NS, /* idle threshold = end of frame */
   };
-  rmt_receive(sensor->rx_channel, sensor->rx_buffer,
-              AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t), &rx_cfg);
+  /* A failed arm leaves the receiver idle, so the read that follows would
+   * time out and report NO_ECHO — the same status as a sensor pointing at
+   * open air. Reporting it keeps a driver fault from passing as a plausible
+   * measurement outcome. */
+  esp_err_t err = rmt_receive(
+      sensor->rx_channel, sensor->rx_buffer,
+      AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t), &rx_cfg);
+  if (err != ESP_OK) {
+    ESP_LOGE(AJ_SR04M_TAG, "Unable to arm RMT capture on echo pin %d: %s",
+             sensor->echo_pin, esp_err_to_name(err));
+  }
+  return err;
 }
 
 /* Returns the TRIG (modes 1-2) / software UART TX pin to a high-impedance
@@ -584,6 +594,8 @@ esp_err_t aj_sr04m_trigger_all(void) {
     return ESP_ERR_INVALID_STATE;
 
   const int count = aj_sr04m_registered_count();
+  int triggered = 0;
+  esp_err_t last_err = ESP_OK;
   for (int i = 0; i < count; i++) {
     /* Co-located modules hear each other's 40 kHz burst. Firing them back
      * to back makes the neighbour's burst race the real echo, and the
@@ -591,10 +603,19 @@ esp_err_t aj_sr04m_trigger_all(void) {
      * each measurement window clear. */
     if (i > 0 && AJ_SR04M_TRIGGER_STAGGER_MS > 0)
       vTaskDelay(pdMS_TO_TICKS(AJ_SR04M_TRIGGER_STAGGER_MS));
-    aj_sr04m_trigger(s_sensor_handles[i]);
+
+    const esp_err_t err = aj_sr04m_trigger(s_sensor_handles[i]);
+    if (err == ESP_OK) {
+      triggered++;
+    } else {
+      last_err = err;
+    }
   }
 
-  return ESP_OK;
+  /* One sensor failing to arm must not hide the others' measurements, so the
+   * loop runs to completion and the error only surfaces when nothing was
+   * triggered at all. */
+  return triggered > 0 ? ESP_OK : last_err;
 }
 
 esp_err_t aj_sr04m_read_all(int16_t *distances,
@@ -616,17 +637,20 @@ esp_err_t aj_sr04m_read_all(int16_t *distances,
   return ESP_OK;
 }
 
-void aj_sr04m_trigger(aj_sr04m_handle_t handle) {
+esp_err_t aj_sr04m_trigger(aj_sr04m_handle_t handle) {
   if (handle == NULL)
-    return;
+    return ESP_ERR_INVALID_ARG;
 
   aj_sr04m_sensor_t *sensor = (aj_sr04m_sensor_t *)handle;
 
   if (!sensor->initialized)
-    return;
+    return ESP_ERR_INVALID_STATE;
 
 #if AJ_SR04M_MODE < 3
-  aj_sr04m_arm_rmt_capture(sensor);
+  /* No point pulsing TRIG with nothing listening: the echo would be missed
+   * anyway, and the burst would only disturb neighbouring modules. */
+  ESP_RETURN_ON_ERROR(aj_sr04m_arm_rmt_capture(sensor), AJ_SR04M_TAG,
+                      "trigger aborted: RMT capture not armed");
 
   gpio_set_level(sensor->trigger_pin, 1);
   esp_rom_delay_us(
@@ -643,7 +667,8 @@ void aj_sr04m_trigger(aj_sr04m_handle_t handle) {
    * much as the others even though it sends no trigger byte. The hardware
    * backend needs no arming — its UART driver buffers on its own. */
   if (sensor->backend == AJ_SR04M_UART_BACKEND_SW) {
-    aj_sr04m_arm_rmt_capture(sensor);
+    ESP_RETURN_ON_ERROR(aj_sr04m_arm_rmt_capture(sensor), AJ_SR04M_TAG,
+                        "trigger aborted: RMT capture not armed");
   }
 
 #if AJ_SR04M_MODE >= 4
@@ -664,6 +689,8 @@ void aj_sr04m_trigger(aj_sr04m_handle_t handle) {
   }
 #endif
 #endif
+
+  return ESP_OK;
 }
 
 aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,

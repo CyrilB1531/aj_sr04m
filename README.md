@@ -138,6 +138,8 @@ Driver lifecycle and bulk access — the usual entry points:
 - `aj_sr04m_trigger_all(void)` — trigger every sensor.
 - `aj_sr04m_read_all(int16_t *distances, aj_sr04m_dist_status_t *statuses, int max_sensors, int *out_sensor_count)` — read every sensor into caller-provided arrays. Returns `ESP_ERR_INVALID_ARG` on a NULL argument and `ESP_ERR_INVALID_SIZE` when `max_sensors` is below `aj_sr04m_get_sensor_count()`, so the two cases stay distinguishable.
 
+Sensors are read one after another, so the worst case — every sensor silent — costs the read timeout times the sensor count. In mode 3 that timeout is one stream period plus margin (170 ms), because nothing prompts the module and a read has to be able to sit through the gap between two frames; four silent sensors therefore hold the call for 680 ms. An application polling slower than the module streams rarely pays it: the UART driver's buffer already holds several frames by the time the read runs, and the call returns at once.
+
 Per-instance control, for pins decided at runtime:
 
 - `aj_sr04m_new(int trigger_pin, int echo_pin, uint8_t trigger_byte, int uart_num)` — create one instance; returns `NULL` if resources are exhausted. `uart_num` in `[0, SOC_UART_NUM)` picks a hardware UART, any other value selects the software backend.

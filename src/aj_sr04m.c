@@ -61,6 +61,29 @@
  * 4.5 m round trip — expires long before it. */
 #define AJ_SR04M_UART_REPLY_TIMEOUT_MS 250
 
+/* Mode 3 is not prompted: nothing the driver does starts a measurement, so
+ * the read waits for the next frame of a free-running stream instead of for
+ * a reply. The module pushes one about every 120 ms — a cadence observed on
+ * the bench, not stated in the Mantech datasheet, like the mode 5 ASCII
+ * payload. A window narrower than that period lands between two frames more
+ * often than not, and the empty buffer that comes back is indistinguishable
+ * here from a malformed one: a healthy sensor is reported as BAD_FRAME.
+ *
+ * One whole stream period, plus 30 ms for the module's own jitter, plus
+ * 20 ms for the FreeRTOS tick quantisation — pdMS_TO_TICKS() floors to the
+ * tick period and the wait may still end one tick short, 10 ms each at the
+ * default 100 Hz. */
+#define AJ_SR04M_UART_STREAM_TIMEOUT_MS (120 + 30 + 20)
+
+/* Modes 3 and 4 share one read call site on the hardware backend, but not
+ * what they wait on: mode 4 is prompted and waits out the module's reply
+ * latency, mode 3 waits out its stream period. */
+#if AJ_SR04M_MODE == 3
+#define AJ_SR04M_UART_BINARY_READ_TIMEOUT_MS AJ_SR04M_UART_STREAM_TIMEOUT_MS
+#else
+#define AJ_SR04M_UART_BINARY_READ_TIMEOUT_MS AJ_SR04M_UART_REPLY_TIMEOUT_MS
+#endif
+
 /* The software backend waits for the same reply, then for the line to sit
  * idle for AJ_SR04M_RMT_IDLE_NS before RMT reports the capture complete. */
 #define AJ_SR04M_SW_UART_CAPTURE_TIMEOUT_MS                                    \
@@ -799,8 +822,9 @@ aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
    * frame's worth: the stream is not delimited, so a read lands mid-frame as
    * often as not, and the scan below picks the newest complete one. */
   uint8_t data[64];
-  int len = uart_read_bytes(sensor->uart_num, data, sizeof(data),
-                            20 / portTICK_PERIOD_MS);
+  int len =
+      uart_read_bytes(sensor->uart_num, data, sizeof(data),
+                      pdMS_TO_TICKS(AJ_SR04M_UART_BINARY_READ_TIMEOUT_MS));
   return aj_sr04m_parse_binary_stream(data, len, distance);
 #endif
 #endif

@@ -168,8 +168,8 @@ esp_err_t __wrap_uart_flush_input(uart_port_t port) {
 int __wrap_uart_read_bytes(uart_port_t port, void *buf, uint32_t length,
                            TickType_t ticks_to_wait) {
   (void)port;
-  (void)ticks_to_wait;
   g_uart_mock.read_bytes_calls++;
+  g_uart_mock.last_read_ticks = ticks_to_wait;
   if (g_uart_mock.read_buffer && g_uart_mock.read_buffer_len > 0 && buf) {
     int n = (int)length < g_uart_mock.read_buffer_len
                 ? (int)length

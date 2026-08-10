@@ -6,6 +6,45 @@
 
 #pragma once
 
+/**
+ * @file aj_sr04m.h
+ * @brief Public API of the AJ-SR04M / JSN-SR04T ultrasonic distance driver.
+ *
+ * @section aj_sr04m_thread_safety Thread safety
+ *
+ * The driver keeps its sensors in one table shared by every entry point, and
+ * that table is protected by an internal mutex. These functions may therefore
+ * be called from several tasks at once, in any order:
+ * aj_sr04m_init(), aj_sr04m_deinit(), aj_sr04m_new(), aj_sr04m_delete(),
+ * aj_sr04m_get_handle(), aj_sr04m_get_sensor_count(), aj_sr04m_trigger_all()
+ * and aj_sr04m_read_all().
+ *
+ * The mutex is held for the whole of aj_sr04m_trigger_all() and
+ * aj_sr04m_read_all(), and both block while holding it — the first on the
+ * delay between triggers, the second on each sensor's capture. A measurement
+ * cycle is therefore serialised against sensor management and against another
+ * measurement cycle: a task calling aj_sr04m_new() or aj_sr04m_delete() waits
+ * for the cycle in progress to finish, and two tasks calling
+ * aj_sr04m_trigger_all() run one after the other rather than interleaved.
+ * That cost is deliberate; the alternative is a table that changes shape
+ * halfway through a walk that lasts milliseconds.
+ *
+ * aj_sr04m_trigger() and aj_sr04m_read_distance() take no lock: they act on a
+ * handle the caller supplies and never look at the table. What that promises,
+ * and what it does not:
+ *    - calls on *different* handles may run concurrently.
+ *    - calls on the *same* handle may not. A sensor owns a single capture
+ *      buffer and a single completion semaphore, so a second trigger re-arms
+ *      the capture the first read is still waiting for.
+ *    - neither may overlap an aj_sr04m_delete() of that same handle. No lock
+ *      inside the driver can fix that: the caller is holding a raw pointer to
+ *      the instance being released. Handle lifetime is the caller's to
+ *      arrange.
+ *
+ * @attention No entry point is callable from an interrupt handler: they take
+ * a mutex, and the read paths block.
+ */
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -75,7 +114,8 @@ typedef enum {
   AJ_SR04M_DIST_NO_ECHO, /**< no echo: too close, too far, or absorbing material
                           */
   AJ_SR04M_DIST_BAD_CHECKSUM, /**< frame received but checksum is invalid */
-  AJ_SR04M_DIST_BAD_FRAME, /**< malformed frame (incorrect header or length) */
+  AJ_SR04M_DIST_BAD_FRAME,    /**< malformed frame (incorrect header or length),
+                                 or a capture cut short by a full buffer */
 } aj_sr04m_dist_status_t;
 
 /**
@@ -89,6 +129,10 @@ typedef enum {
  * @param[out] distance distance in millimeters (valid only if return is
  * AJ_SR04M_DIST_OK)
  *
+ * @attention Unlike aj_sr04m_parse_binary_stream() and
+ * aj_sr04m_parse_ascii_frame(), @p data is not checked for NULL: it is
+ * dereferenced as soon as @p len is 4.
+ *
  * @return
  *    - AJ_SR04M_DIST_OK if the frame is valid and the distance is in [200,
  * 4500] mm
@@ -99,6 +143,41 @@ typedef enum {
  */
 aj_sr04m_dist_status_t aj_sr04m_parse_binary_frame(const uint8_t *data, int len,
                                                    int16_t *distance);
+
+/**
+ * @brief Extract the freshest binary frame from a stream buffer (modes 3-4).
+ *
+ * Unlike aj_sr04m_parse_binary_frame(), which expects a buffer holding exactly
+ * one frame, this scans a buffer of arbitrary length for frame boundaries. Use
+ * it whenever the read length is not known to be a frame length: mode 3 streams
+ * continuously with nothing delimiting the reads, so a buffer typically holds
+ * several frames plus a partial one, and a software-UART capture may decode
+ * extra bytes around the payload.
+ *
+ * The scan runs backwards, so the frame reported is the most recent complete
+ * one in the buffer. Frames are located by header and validated by checksum,
+ * which is what keeps a 0xFF appearing inside a distance field from being
+ * mistaken for a header.
+ *
+ * @param[in]  data     buffer possibly containing several frames
+ * @param[in]  len      number of bytes in @p data
+ * @param[out] distance distance in millimeters (valid only if return is
+ * AJ_SR04M_DIST_OK)
+ *
+ * @note Passing a buffer holding exactly one frame behaves like
+ * aj_sr04m_parse_binary_frame() on the same buffer.
+ *
+ * @return
+ *    - AJ_SR04M_DIST_OK if a valid frame was found and its distance is in
+ * [200, 4500] mm
+ *    - AJ_SR04M_DIST_NO_ECHO if the newest valid frame carries a distance out
+ * of [200, 4500] mm
+ *    - AJ_SR04M_DIST_BAD_CHECKSUM if every candidate frame failed its checksum
+ *    - AJ_SR04M_DIST_BAD_FRAME if @p data is NULL, if @p len is below the
+ * 4-byte frame length, or if no candidate frame was found at all
+ */
+aj_sr04m_dist_status_t aj_sr04m_parse_binary_stream(const uint8_t *data,
+                                                    int len, int16_t *distance);
 
 /**
  * @brief Parse an ASCII frame from the AJ-SR04M (mode 5).
@@ -113,7 +192,8 @@ aj_sr04m_dist_status_t aj_sr04m_parse_binary_frame(const uint8_t *data, int len,
  * @return
  *    - AJ_SR04M_DIST_OK if the "Gap=...mm" pattern is found and the distance is
  * in [200, 4500] mm
- *    - AJ_SR04M_DIST_BAD_FRAME if the pattern is missing or unparseable
+ *    - AJ_SR04M_DIST_BAD_FRAME if @p data is NULL, or the pattern is missing
+ * or unparseable
  *    - AJ_SR04M_DIST_NO_ECHO if the parsed distance is out of [200, 4500] mm
  */
 aj_sr04m_dist_status_t aj_sr04m_parse_ascii_frame(const char *data,
@@ -123,13 +203,14 @@ aj_sr04m_dist_status_t aj_sr04m_parse_ascii_frame(const char *data,
  * @brief Initialize the AJ-SR04M driver.
  *
  * This function must be called once before creating any sensor instances.
- * It initializes the global driver state (GPIO, RMT, or UART hardware as
- * needed).
+ * It creates every sensor described by Kconfig together with the GPIO, RMT or
+ * UART resources each one needs.
  *
  * @return
- *    - ESP_OK on success
- *    - ESP_ERR_NO_MEM if internal allocations fail
- *    - the error code returned by the hardware driver on failure
+ *    - ESP_OK on success, or if the driver is already initialized
+ *    - ESP_ERR_INVALID_STATE if a Kconfig-described sensor could not be
+ * created, for any of the reasons listed by aj_sr04m_new(); the sensors
+ * already created are released and the driver stays uninitialized
  */
 esp_err_t aj_sr04m_init(void);
 
@@ -158,7 +239,9 @@ esp_err_t aj_sr04m_deinit(void);
  *
  * @return
  *    - handle (non-NULL) on success
- *    - NULL if allocation fails or if hardware resources are exhausted
+ *    - NULL if aj_sr04m_init() has not been called yet, if the
+ * AJ_SR04M_MAX_SENSORS slots are all in use, if a pin cannot be configured, or
+ * if allocation of the RMT buffer, RMT channel, semaphore or UART driver fails
  *
  * @note
  *    - Modes 1-2 (GPIO): each instance requires a dedicated RMT RX channel.
@@ -188,25 +271,54 @@ void aj_sr04m_delete(aj_sr04m_handle_t handle);
  *
  * Behavior depending on AJ_SR04M_MODE:
  *    - modes 1 and 2: arm RMT RX, then pulse the TRIGGER pin
- *    - modes 4 and 5: send the trigger byte over the UART
- *    - mode 3: no-op (the module emits frames autonomously)
+ *    - modes 4 and 5: arm RMT RX on a software UART port, then send the
+ * trigger byte over the UART
+ *    - mode 3: arm RMT RX on a software UART port; no-op on a hardware UART
+ * port (the module emits frames autonomously and the UART driver buffers them)
+ *
+ * @note A sensor must be triggered again before every aj_sr04m_read_distance()
+ * call, mode 3 on a software UART port included.
+ *
+ * @attention Takes no lock. Two tasks may drive two different sensors at the
+ * same time, but not the same one, and neither may overlap an
+ * aj_sr04m_delete() of @p handle. See @ref aj_sr04m_thread_safety.
  *
  * @param handle Handle returned by aj_sr04m_new()
+ *
+ * @return
+ *    - ESP_OK if the sensor was triggered
+ *    - ESP_ERR_INVALID_ARG if @p handle is NULL
+ *    - ESP_ERR_INVALID_STATE if the sensor is not initialized
+ *    - the error reported by rmt_receive() if the capture could not be armed,
+ * in which case no trigger was emitted
  */
-void aj_sr04m_trigger(aj_sr04m_handle_t handle);
+esp_err_t aj_sr04m_trigger(aj_sr04m_handle_t handle);
 
 /**
  * @brief Read the distance measured by a specific sensor instance.
+ *
+ * @note The call blocks until the measurement lands or its budget runs out.
+ * Modes 1-2 allow ~100 ms: RMT reports a capture only once the line has been
+ * idle for its threshold, so a 4.5 m echo — 26 ms of pulse plus 30 ms of
+ * idle — completes well after the round trip itself. Modes 3-5 wait on the
+ * module instead: 250 ms for a hardware UART reply, 300 ms on the software
+ * backend, and 20 ms in mode 3, whose frames are already buffered.
  *
  * @param handle   Handle returned by aj_sr04m_new()
  * @param[out] distance distance in millimeters (valid only if the return
  * value is AJ_SR04M_DIST_OK)
  *
+ * @attention Takes no lock, and blocks until the capture completes or times
+ * out. Same rules as aj_sr04m_trigger(); see @ref aj_sr04m_thread_safety.
+ *
  * @return
  *    - AJ_SR04M_DIST_OK if the measurement is valid
  *    - AJ_SR04M_DIST_NO_ECHO if no echo was detected
  *    - AJ_SR04M_DIST_BAD_CHECKSUM if the UART checksum is invalid
- *    - AJ_SR04M_DIST_BAD_FRAME if the UART frame is malformed
+ *    - AJ_SR04M_DIST_BAD_FRAME if @p handle or @p distance is NULL, if the
+ * sensor is not initialized, if the UART frame is malformed, if the RMT
+ * capture filled its buffer and was therefore cut short, or if a hardware UART
+ * backend read nothing before its reply timeout
  */
 aj_sr04m_dist_status_t aj_sr04m_read_distance(aj_sr04m_handle_t handle,
                                               int16_t *distance);
@@ -234,6 +346,15 @@ int aj_sr04m_get_sensor_count(void);
  *
  * @param index 0-based index, below aj_sr04m_get_sensor_count()
  *
+ * @attention The returned handle is a snapshot, and the driver's mutex only
+ * covers the lookup itself. If another task calls aj_sr04m_delete() between
+ * this call and the use of its result, the same index now names a different
+ * sensor — and should that other task have deleted the very sensor returned
+ * here, the handle points at a released instance and using it is undefined.
+ * Keeping sensor creation and deletion in a single task, or holding the
+ * handles that task hands out rather than re-reading them by index, is what
+ * makes the result safe to use.
+ *
  * @return
  *    - the sensor handle
  *    - NULL if @p index is out of range
@@ -243,10 +364,19 @@ aj_sr04m_handle_t aj_sr04m_get_handle(int index);
 /**
  * @brief Trigger a distance measurement on all configured sensors.
  *
+ * Sensors that fail to trigger do not stop the ones after them: the whole set
+ * is walked before an error surfaces.
+ *
+ * @note Holds the driver's mutex for the whole walk, delays between triggers
+ * included, so sensor creation and deletion wait for it. See
+ * @ref aj_sr04m_thread_safety.
+ *
  * @return
  *    - ESP_OK if at least one sensor was triggered successfully
  *    - ESP_ERR_INVALID_STATE if the driver is not initialized or no sensors are
  * configured
+ *    - the last error reported by aj_sr04m_trigger() if no sensor could be
+ * triggered at all
  */
 esp_err_t aj_sr04m_trigger_all(void);
 
@@ -258,9 +388,15 @@ esp_err_t aj_sr04m_trigger_all(void);
  * @param[in]  max_sensors    capacity of the provided arrays
  * @param[out] out_sensor_count number of sensors read
  *
+ * @note Holds the driver's mutex for the whole walk, and blocks on each
+ * sensor's capture while doing so. See @ref aj_sr04m_thread_safety.
+ *
  * @return
  *    - ESP_OK on success
- *    - ESP_ERR_INVALID_ARG if arrays are NULL or max_sensors is too small
+ *    - ESP_ERR_INVALID_ARG if @p distances, @p statuses or @p out_sensor_count
+ * is NULL
+ *    - ESP_ERR_INVALID_SIZE if @p max_sensors is below the number of
+ * configured sensors reported by aj_sr04m_get_sensor_count()
  *    - ESP_ERR_INVALID_STATE if the driver is not initialized or no sensors are
  * configured
  */

@@ -5,13 +5,16 @@
  */
 
 /*
- * Software UART pure-function tests — mode-agnostic, no hardware mocks.
- * Runs in every build like test_parser.c.
+ * Software UART tests — mode-agnostic, like test_parser.c, so they run in
+ * every build. The encode/decode/backend cases need no mocks at all; the
+ * write_byte cases at the bottom read the GPIO and delay mocks and are
+ * therefore built on the linux target only.
  */
 
 #include <stdint.h>
 #include <string.h>
 
+#include "sdkconfig.h"
 #include "unity.h"
 
 #include "aj_sr04m_sw_uart.h"
@@ -178,3 +181,106 @@ TEST_CASE("sw_uart backend: out-of-range port -> SW", "[aj_sr04m][sw_uart]") {
   TEST_ASSERT_EQUAL(AJ_SR04M_UART_BACKEND_SW,
                     aj_sr04m_sw_uart_resolve_backend(-1, 3));
 }
+
+/* === write_byte ======================================================== */
+
+/*
+ * Linux-only: these read back the GPIO and delay mocks, which on ESP targets
+ * are compiled in modes 1-2 only. The function under test is target
+ * independent, so the linux run covers it everywhere.
+ */
+#if CONFIG_IDF_TARGET_LINUX
+
+#include "mocks.h"
+
+#define SW_UART_TEST_TX_PIN 17
+
+/* 10 frame bits plus the idle-high level the function leaves behind. */
+#define SW_UART_TEST_EDGES (AJ_SR04M_SW_UART_FRAME_BITS + 1)
+
+TEST_CASE("sw_uart write: puts start, LSB-first data and stop on the wire",
+          "[aj_sr04m][sw_uart]") {
+  mocks_reset();
+  aj_sr04m_sw_uart_write_byte(SW_UART_TEST_TX_PIN, 0x55);
+
+  uint8_t expected[AJ_SR04M_SW_UART_FRAME_BITS];
+  aj_sr04m_sw_uart_encode_byte(0x55, expected);
+
+  TEST_ASSERT_EQUAL_INT(SW_UART_TEST_EDGES, g_gpio_mock.level_seq_len);
+  for (int i = 0; i < AJ_SR04M_SW_UART_FRAME_BITS; i++) {
+    TEST_ASSERT_EQUAL_INT(expected[i], g_gpio_mock.level_seq[i]);
+  }
+  /* The line must be released idle high, whatever the stop bit was. */
+  TEST_ASSERT_EQUAL_INT(1, g_gpio_mock.level_seq[AJ_SR04M_SW_UART_FRAME_BITS]);
+  TEST_ASSERT_EQUAL_INT(SW_UART_TEST_TX_PIN, g_gpio_mock.last_pin);
+}
+
+TEST_CASE("sw_uart write: holds every bit one bit time",
+          "[aj_sr04m][sw_uart]") {
+  mocks_reset();
+  aj_sr04m_sw_uart_write_byte(SW_UART_TEST_TX_PIN, 0x00);
+
+  TEST_ASSERT_EQUAL_INT(AJ_SR04M_SW_UART_FRAME_BITS,
+                        g_esp_rom_mock.delay_seq_len);
+  for (int i = 0; i < AJ_SR04M_SW_UART_FRAME_BITS; i++) {
+    TEST_ASSERT_EQUAL_UINT32(AJ_SR04M_SW_UART_BIT_US,
+                             g_esp_rom_mock.delay_seq[i]);
+  }
+  TEST_ASSERT_EQUAL_INT64((int64_t)AJ_SR04M_SW_UART_FRAME_BITS *
+                              AJ_SR04M_SW_UART_BIT_US,
+                          g_esp_rom_mock.now_us);
+}
+
+/* Regression for #22, scheduling half. Edges are planned against an absolute
+ * frame clock, so an interruption is charged to the bit it landed in: the
+ * next bit is shortened by exactly the overrun and the frame still ends on
+ * time. Chained relative delays would instead have kept every bit at its
+ * nominal length and pushed the stop bit 40 us late — lateness an 8N1
+ * receiver, resynchronising only on the start bit, accumulates to the end of
+ * the frame. */
+TEST_CASE("sw_uart write: an interruption is charged to the bit it delayed",
+          "[aj_sr04m][sw_uart]") {
+  mocks_reset();
+  g_esp_rom_mock.overrun_us = 40;
+  g_esp_rom_mock.overrun_at_call = 3;
+
+  aj_sr04m_sw_uart_write_byte(SW_UART_TEST_TX_PIN, 0x55);
+
+  TEST_ASSERT_EQUAL_INT(AJ_SR04M_SW_UART_FRAME_BITS,
+                        g_esp_rom_mock.delay_seq_len);
+  TEST_ASSERT_EQUAL_UINT32(AJ_SR04M_SW_UART_BIT_US,
+                           g_esp_rom_mock.delay_seq[3]);
+  TEST_ASSERT_EQUAL_UINT32(AJ_SR04M_SW_UART_BIT_US - 40,
+                           g_esp_rom_mock.delay_seq[4]);
+  TEST_ASSERT_EQUAL_UINT32(AJ_SR04M_SW_UART_BIT_US,
+                           g_esp_rom_mock.delay_seq[5]);
+  TEST_ASSERT_EQUAL_INT64((int64_t)AJ_SR04M_SW_UART_FRAME_BITS *
+                              AJ_SR04M_SW_UART_BIT_US,
+                          g_esp_rom_mock.now_us);
+}
+
+/* An interruption longer than a bit time cannot be undone — that bit is
+ * already malformed — but the frame must not sleep on top of it. The edges
+ * it swallowed are emitted back to back until the clock catches up, so the
+ * remaining bits land where the receiver expects them. */
+TEST_CASE("sw_uart write: catches up after an overrun longer than a bit",
+          "[aj_sr04m][sw_uart]") {
+  mocks_reset();
+  g_esp_rom_mock.overrun_us = 2 * AJ_SR04M_SW_UART_BIT_US + 42;
+  g_esp_rom_mock.overrun_at_call = 0;
+
+  aj_sr04m_sw_uart_write_byte(SW_UART_TEST_TX_PIN, 0x55);
+
+  /* Two edges came due while the clock was away, so they asked for no delay
+   * at all: 10 bits, 8 sleeps. */
+  TEST_ASSERT_EQUAL_INT(AJ_SR04M_SW_UART_FRAME_BITS - 2,
+                        g_esp_rom_mock.delay_seq_len);
+  TEST_ASSERT_EQUAL_INT(SW_UART_TEST_EDGES, g_gpio_mock.level_seq_len);
+  TEST_ASSERT_EQUAL_UINT32(AJ_SR04M_SW_UART_BIT_US - 42,
+                           g_esp_rom_mock.delay_seq[1]);
+  TEST_ASSERT_EQUAL_INT64((int64_t)AJ_SR04M_SW_UART_FRAME_BITS *
+                              AJ_SR04M_SW_UART_BIT_US,
+                          g_esp_rom_mock.now_us);
+}
+
+#endif /* CONFIG_IDF_TARGET_LINUX */

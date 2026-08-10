@@ -8,9 +8,9 @@
 
 #include "driver/gpio.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-
-static portMUX_TYPE s_sw_uart_mux = portMUX_INITIALIZER_UNLOCKED;
+#include "freertos/task.h"
 
 void aj_sr04m_sw_uart_encode_byte(uint8_t byte, uint8_t levels[10]) {
   levels[0] = 0; /* start bit */
@@ -88,11 +88,29 @@ void aj_sr04m_sw_uart_write_byte(int tx_pin, uint8_t byte) {
   uint8_t levels[AJ_SR04M_SW_UART_FRAME_BITS];
   aj_sr04m_sw_uart_encode_byte(byte, levels);
 
-  portENTER_CRITICAL(&s_sw_uart_mux);
+  /* Suspending the scheduler rather than masking interrupts. What can
+   * corrupt the frame is another task taking the CPU between two edges, and
+   * vTaskSuspendAll() already rules that out; a critical section would also
+   * hold every interrupt off for the ~1 ms the frame lasts, starving the
+   * WiFi and BLE stacks, other drivers' completions and the tick itself. */
+  vTaskSuspendAll();
+
+  /* Each edge is aimed at an absolute offset from the start of the frame
+   * instead of chaining relative delays. An ISR that fires mid-frame is then
+   * paid for out of the bit it landed in, rather than pushing every
+   * remaining edge back: an 8N1 receiver resynchronises only on the start
+   * bit, so accumulated lateness is exactly what it cannot absorb by the
+   * time the stop bit is sampled. */
+  const int64_t frame_start_us = esp_timer_get_time();
   for (int i = 0; i < AJ_SR04M_SW_UART_FRAME_BITS; i++) {
     gpio_set_level((gpio_num_t)tx_pin, levels[i]);
-    esp_rom_delay_us(AJ_SR04M_SW_UART_BIT_US);
+    const int64_t next_edge_us =
+        frame_start_us + (int64_t)(i + 1) * AJ_SR04M_SW_UART_BIT_US;
+    const int64_t remaining_us = next_edge_us - esp_timer_get_time();
+    if (remaining_us > 0) {
+      esp_rom_delay_us((uint32_t)remaining_us);
+    }
   }
   gpio_set_level((gpio_num_t)tx_pin, 1); /* leave line idle high */
-  portEXIT_CRITICAL(&s_sw_uart_mux);
+  xTaskResumeAll();
 }

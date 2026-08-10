@@ -211,7 +211,7 @@ jobs:
               "4:aj_sr04m:" "4:jsn_sr04t:" \
               "5:aj_sr04m:" "5:jsn_sr04t:" \
               "1:aj_sr04m:multi" "4:aj_sr04m:multi" \
-              "4:aj_sr04m:swuart" "5:aj_sr04m:swuart"; do
+              "3:aj_sr04m:swuart" "4:aj_sr04m:swuart" "5:aj_sr04m:swuart"; do
             MODE="${spec%%:*}"
             REST="${spec#*:}"
             VARIANT="${REST%%:*}"
@@ -235,6 +235,11 @@ jobs:
             else
               idf.py build
             fi
+            # The binary exits with the Unity failure count, but the pipe
+            # to tee discards that status (no `pipefail` here on purpose):
+            # the greps below are the gate, and they fail the step at the
+            # same point without the exit status short-circuiting `set -e`
+            # mid-iteration.
             ./build/aj_sr04m_test_linux.elf | tee "output.${TAG}.log"
             grep -qE "Failures +0 " "output.${TAG}.log"
             grep -q "=== TESTS_DONE ===" "output.${TAG}.log"

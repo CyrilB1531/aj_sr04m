@@ -166,3 +166,97 @@ TEST_CASE("ascii parser: empty string returns BAD_FRAME",
   TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME,
                     aj_sr04m_parse_ascii_frame("", &dist));
 }
+
+/* === binary stream scan ================================================= */
+
+/* 1500 mm = 0x05DC, checksum (0xFF + 0x05 + 0xDC) & 0xFF = 0xE0.
+ * 2000 mm = 0x07D0, checksum 0xD6. */
+#define FRAME_1500 0xFF, 0x05, 0xDC, 0xE0
+#define FRAME_2000 0xFF, 0x07, 0xD0, 0xD6
+
+TEST_CASE("binary stream: single frame matches the frame parser",
+          "[aj_sr04m][parser]") {
+  const uint8_t buf[4] = {FRAME_1500};
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK,
+                    aj_sr04m_parse_binary_stream(buf, sizeof(buf), &dist));
+  TEST_ASSERT_EQUAL_INT16(1500, dist);
+}
+
+TEST_CASE("binary stream: returns the newest of several frames",
+          "[aj_sr04m][parser]") {
+  const uint8_t buf[8] = {FRAME_1500, FRAME_2000};
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK,
+                    aj_sr04m_parse_binary_stream(buf, sizeof(buf), &dist));
+  TEST_ASSERT_EQUAL_INT16(2000, dist);
+}
+
+/* What an autonomous module actually leaves in the ring buffer: a read
+ * starts mid-frame and ends mid-frame. This is the case that made every
+ * mode 3 read fail before the scan existed. */
+TEST_CASE("binary stream: skips leading and trailing partial frames",
+          "[aj_sr04m][parser]") {
+  const uint8_t buf[13] = {0xDC,       0xE0, /* tail of an earlier frame */
+                           FRAME_1500,       /* complete */
+                           FRAME_2000,       /* complete, newest */
+                           0xFF,       0x07,
+                           0xD0}; /* truncated, no checksum yet */
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK,
+                    aj_sr04m_parse_binary_stream(buf, sizeof(buf), &dist));
+  TEST_ASSERT_EQUAL_INT16(2000, dist);
+}
+
+/* 0xFF is a legal dist_H: 65244 mm would be absurd, but the byte still
+ * appears mid-frame and must not be mistaken for a header. The checksum is
+ * what rules it out. */
+TEST_CASE("binary stream: a 0xFF inside a frame is not taken for a header",
+          "[aj_sr04m][parser]") {
+  const uint8_t buf[8] = {0xFF, 0xFF, 0x01, 0xFF, FRAME_1500};
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK,
+                    aj_sr04m_parse_binary_stream(buf, sizeof(buf), &dist));
+  TEST_ASSERT_EQUAL_INT16(1500, dist);
+}
+
+TEST_CASE("binary stream: all checksums wrong returns BAD_CHECKSUM",
+          "[aj_sr04m][parser]") {
+  const uint8_t buf[8] = {0xFF, 0x05, 0xDC, 0x00, 0xFF, 0x07, 0xD0, 0x00};
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_CHECKSUM,
+                    aj_sr04m_parse_binary_stream(buf, sizeof(buf), &dist));
+}
+
+TEST_CASE("binary stream: no header at all returns BAD_FRAME",
+          "[aj_sr04m][parser]") {
+  const uint8_t buf[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME,
+                    aj_sr04m_parse_binary_stream(buf, sizeof(buf), &dist));
+}
+
+TEST_CASE("binary stream: out-of-range distance returns NO_ECHO",
+          "[aj_sr04m][parser]") {
+  /* 6016 mm = 0x1780, checksum (0xFF + 0x17 + 0x80) & 0xFF = 0x96 — the
+   * out-of-range sentinel this AJ-SR04M revision emits. */
+  const uint8_t buf[4] = {0xFF, 0x17, 0x80, 0x96};
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_NO_ECHO,
+                    aj_sr04m_parse_binary_stream(buf, sizeof(buf), &dist));
+}
+
+TEST_CASE("binary stream: buffer shorter than a frame returns BAD_FRAME",
+          "[aj_sr04m][parser]") {
+  const uint8_t buf[3] = {0xFF, 0x05, 0xDC};
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME,
+                    aj_sr04m_parse_binary_stream(buf, sizeof(buf), &dist));
+}
+
+TEST_CASE("binary stream: NULL buffer returns BAD_FRAME",
+          "[aj_sr04m][parser]") {
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_BAD_FRAME,
+                    aj_sr04m_parse_binary_stream(NULL, 8, &dist));
+}

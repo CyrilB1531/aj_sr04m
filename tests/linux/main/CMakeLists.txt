@@ -18,8 +18,14 @@ idf_component_register(
         "${CASES}/test_mode4_uart_binary.c"
         "${CASES}/test_mode5_uart_ascii.c"
         "${CASES}/test_multi_sensor.c"
+        "${CASES}/test_locking.c"
     INCLUDE_DIRS "${CASES}" "${CMAKE_CURRENT_LIST_DIR}/../../../priv_include"
-    REQUIRES unity aj_sr04m esp_driver_uart
+    # esp_driver_rmt has no sources on the linux target but still exports its
+    # public headers, so the mocks build against the very same
+    # rmt_rx_done_event_data_t the driver sees. A local stub used to stand in
+    # here, and its fields were declared in the opposite order: the driver
+    # read the symbol pointer as the symbol count and never noticed.
+    REQUIRES unity aj_sr04m esp_driver_uart esp_driver_rmt esp_timer
     WHOLE_ARCHIVE
 )
 
@@ -35,6 +41,7 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=uart_set_pin"
     "-Wl,--wrap=uart_write_bytes"
     "-Wl,--wrap=uart_read_bytes"
+    "-Wl,--wrap=uart_flush_input"
 )
 
 # GPIO + RMT + esp_rom wraps. On the linux target esp_driver_gpio and
@@ -52,4 +59,24 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=rmt_disable"
     "-Wl,--wrap=rmt_del_channel"
     "-Wl,--wrap=rmt_receive"
+)
+
+# Allocation-failure injection, linux only. aj_sr04m_new() has two exits no
+# driver mock can reach — the RMT buffer malloc and the rx_done_sem creation
+# — and they are exactly the paths that free what was already acquired, so
+# leaving them untested leaves the cleanup untested. xSemaphoreCreateBinary()
+# is a macro over xQueueGenericCreate(), hence the wrap on the queue call.
+#
+# Deliberately NOT applied to the QEMU project: wrapping malloc on an ESP
+# target intercepts allocations IDF makes during startup, long before any
+# test runs. The mocks filter by allocation size and queue type so that even
+# here they only ever fire for the driver's own calls.
+#
+# vQueueDelete is the other half of that pair: vSemaphoreDelete() is a macro
+# over it, and intercepting it is what lets a test see *when* the ISR's
+# semaphore is destroyed relative to the RMT channel being disabled.
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=malloc"
+    "-Wl,--wrap=xQueueGenericCreate"
+    "-Wl,--wrap=vQueueDelete"
 )

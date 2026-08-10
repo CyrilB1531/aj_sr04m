@@ -13,6 +13,8 @@
 #include "esp_err.h"
 #include "sdkconfig.h"
 
+#include "freertos/FreeRTOS.h"
+
 #include "driver/uart.h"
 
 #include "aj_sr04m.h"
@@ -32,12 +34,22 @@ struct uart_mock_state {
   int set_pin_calls;
   int write_bytes_calls;
   int read_bytes_calls;
+  int flush_input_calls;
+  /* Value of flush_input_calls when the last trigger byte went out. Lets a
+   * test assert the flush happened *before* the write rather than merely
+   * somewhere in the cycle. */
+  int flush_calls_at_write;
 
   esp_err_t driver_install_ret;
   esp_err_t param_config_ret;
   esp_err_t set_pin_ret;
   int write_bytes_ret;
   int read_bytes_ret;
+
+  /* Ticks the last uart_read_bytes() was willing to wait. The read window is
+   * what decides whether a free-running module's next frame is still inside
+   * it, so it is asserted on rather than assumed. */
+  TickType_t last_read_ticks;
 
   uart_port_t last_port;
   uart_config_t last_config;
@@ -72,6 +84,14 @@ struct gpio_mock_state {
    * GPIO_MODE_INPUT to check that a deleted or failed sensor stopped
    * driving its trigger pin. */
   int last_mode;
+
+/* Every level driven, in order, so a test can read back the waveform a
+ * bit-banged UART frame put on the wire instead of only its last edge.
+ * Recording stops once full — a saturated buffer shows up as a length
+ * mismatch rather than as wrapped-around garbage. */
+#define GPIO_MOCK_MAX_LEVELS 32
+  int level_seq[GPIO_MOCK_MAX_LEVELS];
+  int level_seq_len;
 };
 
 extern struct gpio_mock_state g_gpio_mock;
@@ -81,6 +101,25 @@ extern struct gpio_mock_state g_gpio_mock;
 struct esp_rom_mock_state {
   int delay_us_calls;
   uint32_t last_delay_us;
+
+/* Every requested delay, in order, so a test can check how a bit-banged
+ * frame re-planned its edges rather than only how long the last one was. */
+#define ESP_ROM_MOCK_MAX_DELAYS 32
+  uint32_t delay_seq[ESP_ROM_MOCK_MAX_DELAYS];
+  int delay_seq_len;
+
+  /* Virtual microsecond clock, advanced by every delay served. On the linux
+   * target it also backs esp_timer_get_time(), which has no implementation
+   * there — so code that busy-waits then reads the clock sees time move the
+   * way it would on the chip, deterministically. */
+  int64_t now_us;
+
+  /* One-shot overrun injection: `overrun_us` extra microseconds are charged
+   * to the virtual clock on delay call number `overrun_at_call` (0-based),
+   * standing in for an ISR that ran while the frame was in flight. Inert
+   * while overrun_us is 0. */
+  uint32_t overrun_us;
+  int overrun_at_call;
 };
 
 extern struct esp_rom_mock_state g_esp_rom_mock;
@@ -110,16 +149,104 @@ struct rmt_mock_state {
   void *last_receive_buffer;
   size_t last_receive_buffer_size;
 
+  /* Idle thresholds the driver asked for, straight from the last
+   * rmt_receive_config_t. signal_range_max_ns is what ends a capture, so it
+   * is the driver's statement of how long a level run may last — the echo
+   * pulse included. */
+  uint32_t last_signal_range_min_ns;
+  uint32_t last_signal_range_max_ns;
+
   bool fire_pulse_on_receive;
   uint32_t fire_pulse_high_us;
 
+  /* Delay, in milliseconds, between the arming and the completion. Zero
+   * fires synchronously inside rmt_receive, which is what most cases want;
+   * a non-zero value defers the callback to a helper task, so the read
+   * really blocks and its timeout is exercised. One deferred capture at a
+   * time — the helper writes into the buffer of the receive that armed it,
+   * so a case must let the completion land before the sensor is deleted. */
+  uint32_t fire_pulse_delay_ms;
+
+  /* Bytes to synthesise as a 9600 8N1 line capture instead of the single
+   * echo pulse, for the software UART backend. The mock encodes them the way
+   * the module would drive the wire — start bit, 8 data bits LSB first, stop
+   * bit — and merges identical neighbouring levels into one run, as the RMT
+   * hardware does. Points at caller-owned memory that must outlive the
+   * receive. */
+  const uint8_t *fire_uart_bytes;
+  size_t fire_uart_len;
+
+  /* Report the completion as filling the whole buffer, which is how a
+   * truncated capture reaches the driver: the RMT engine stops at the end of
+   * its memory and hands back everything it stored. */
+  bool fire_capture_fills_buffer;
+
+  /* The driver registers the same function for every sensor; the context
+   * that tells them apart is kept per channel inside mocks.c. */
   aj_sr04m_rmt_rx_done_cb_t on_recv_done;
-  void *on_recv_done_user_data;
 };
 
 extern struct rmt_mock_state g_rmt_mock;
 
+/* Teardown steps, recorded in the order the driver performs them. Counters
+ * cannot express what matters when a sensor is released: the channel has to
+ * stop delivering completions before the semaphore its ISR callback gives is
+ * destroyed, and the UART driver has to be gone before its pins are parked,
+ * since deleting it reconfigures them. Both steps happening is not the same
+ * as them happening in that order. MOCKS_TEARDOWN_SEM_DELETE is only ever
+ * recorded on the linux target, where the queue wraps live. */
+typedef enum {
+  MOCKS_TEARDOWN_RMT_DISABLE,
+  MOCKS_TEARDOWN_RMT_DEL_CHANNEL,
+  MOCKS_TEARDOWN_SEM_DELETE,
+  MOCKS_TEARDOWN_UART_DRIVER_DELETE,
+  /* A gpio_config() asking for GPIO_MODE_INPUT, i.e. a pin being parked. */
+  MOCKS_TEARDOWN_GPIO_PIN_RELEASE,
+} mocks_teardown_step_t;
+
+#define MOCKS_TEARDOWN_MAX_STEPS 32
+
+struct teardown_mock_state {
+  mocks_teardown_step_t steps[MOCKS_TEARDOWN_MAX_STEPS];
+  int steps_len;
+};
+
+extern struct teardown_mock_state g_teardown_mock;
+
+/**
+ * @brief Position of a teardown step in the recorded sequence.
+ *
+ * @param step step to look for
+ *
+ * @return
+ *    - the index of its first occurrence
+ *    - -1 if it was never recorded
+ */
+int mocks_teardown_step_index(mocks_teardown_step_t step);
+
 #endif /* hardware-driver mocks (linux all modes, ESP modes 1-2) */
+
+#if CONFIG_IDF_TARGET_LINUX
+
+/* Allocation-failure injection, for the aj_sr04m_new() exits that no driver
+ * mock can reach: the RMT buffer malloc and the rx_done_sem creation.
+ *
+ * Both wraps stay inert until a flag is armed, and each targets its call
+ * narrowly — malloc only fails for a buffer of exactly the driver's RMT
+ * capture size, and the queue wrap only for a binary semaphore. That is what
+ * keeps them from disturbing the allocations ESP-IDF, Unity and the C
+ * library make around the code under test. Each flag disarms itself once it
+ * has fired, so one armed flag injects exactly one failure. */
+struct heap_mock_state {
+  bool fail_rmt_buffer_alloc; /**< next RMT-sized malloc returns NULL */
+  bool fail_semaphore_create; /**< next binary semaphore returns NULL */
+  int rmt_buffer_alloc_calls; /**< RMT-sized mallocs seen */
+  int semaphore_create_calls; /**< binary semaphores created */
+};
+
+extern struct heap_mock_state g_heap_mock;
+
+#endif /* CONFIG_IDF_TARGET_LINUX */
 
 /* Zero out the mock state and set sensible defaults (success returns). Call
  * at the top of every TEST_CASE that uses the wrapped functions. */

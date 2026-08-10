@@ -70,8 +70,17 @@ aj_sr04m_uart_backend_t aj_sr04m_sw_uart_resolve_backend(int uart_num,
 /**
  * @brief Bit-bang one byte at 9600 8N1 on a GPIO (software UART TX).
  *
- * Drives @p tx_pin inside a critical section: start bit, 8 data bits
- * LSB-first, stop bit, each held AJ_SR04M_SW_UART_BIT_US microseconds.
+ * Drives @p tx_pin with the start bit, 8 data bits LSB-first and the stop
+ * bit. Every edge is aimed at an absolute offset from the start of the
+ * frame — AJ_SR04M_SW_UART_BIT_US apart — so an interruption is charged to
+ * the bit it lands in instead of shifting the rest of the frame.
+ *
+ * @note The scheduler is suspended for the ~1 ms the frame takes, which
+ *       keeps any task from preempting it, but interrupts stay enabled. An
+ *       ISR running longer than one bit time can therefore still stretch a
+ *       bit beyond what the module's receiver tolerates. That failure is
+ *       recoverable: the module does not answer, the read reports no echo,
+ *       and the next measurement cycle triggers again.
  *
  * @param tx_pin GPIO already configured as output
  * @param byte   byte to transmit

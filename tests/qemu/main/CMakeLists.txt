@@ -18,6 +18,7 @@ idf_component_register(
         "${CASES}/test_mode4_uart_binary.c"
         "${CASES}/test_mode5_uart_ascii.c"
         "${CASES}/test_multi_sensor.c"
+        "${CASES}/test_locking.c"
     INCLUDE_DIRS "${CASES}" "${CMAKE_CURRENT_LIST_DIR}/../../../priv_include"
     REQUIRES unity aj_sr04m esp_driver_uart esp_driver_gpio esp_driver_rmt
             esp_rom
@@ -33,6 +34,7 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=uart_set_pin"
     "-Wl,--wrap=uart_write_bytes"
     "-Wl,--wrap=uart_read_bytes"
+    "-Wl,--wrap=uart_flush_input"
 )
 
 # GPIO + RMT + esp_rom wraps are only added for modes 1/2. These symbols

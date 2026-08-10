@@ -136,13 +136,15 @@ Driver lifecycle and bulk access — the usual entry points:
 - `aj_sr04m_deinit(void)` — delete all instances and return to the pre-initialized state.
 - `aj_sr04m_get_sensor_count(void)` — number of instances actually created.
 - `aj_sr04m_trigger_all(void)` — trigger every sensor.
-- `aj_sr04m_read_all(int16_t *distances, aj_sr04m_dist_status_t *statuses, int max_sensors, int *out_count)` — read every sensor into caller-provided arrays.
+- `aj_sr04m_read_all(int16_t *distances, aj_sr04m_dist_status_t *statuses, int max_sensors, int *out_sensor_count)` — read every sensor into caller-provided arrays. Returns `ESP_ERR_INVALID_ARG` on a NULL argument and `ESP_ERR_INVALID_SIZE` when `max_sensors` is below `aj_sr04m_get_sensor_count()`, so the two cases stay distinguishable.
+
+Sensors are read one after another, so the worst case — every sensor silent — costs the read timeout times the sensor count. In mode 3 that timeout is one stream period plus margin (170 ms), because nothing prompts the module and a read has to be able to sit through the gap between two frames; four silent sensors therefore hold the call for 680 ms. An application polling slower than the module streams rarely pays it: the UART driver's buffer already holds several frames by the time the read runs, and the call returns at once.
 
 Per-instance control, for pins decided at runtime:
 
 - `aj_sr04m_new(int trigger_pin, int echo_pin, uint8_t trigger_byte, int uart_num)` — create one instance; returns `NULL` if resources are exhausted. `uart_num` in `[0, SOC_UART_NUM)` picks a hardware UART, any other value selects the software backend.
 - `aj_sr04m_delete(aj_sr04m_handle_t handle)` — release that instance.
-- `aj_sr04m_trigger(aj_sr04m_handle_t handle)` — arm RMT and pulse TRIG (modes 1-2), send the trigger byte (modes 4-5), or no-op (mode 3, autonomous).
+- `aj_sr04m_trigger(aj_sr04m_handle_t handle)` — arm RMT and pulse TRIG (modes 1-2), arm RMT on a software UART port then send the trigger byte (modes 4-5), or arm RMT alone (mode 3, autonomous — a no-op on a hardware UART port). Returns `ESP_OK`, or an error when the capture could not be armed, in which case nothing was triggered.
 - `aj_sr04m_read_distance(aj_sr04m_handle_t handle, int16_t *distance)` — return a measurement status; on success `*distance` holds the value in millimeters.
 
 Frame parsers, usable without hardware:
@@ -180,6 +182,8 @@ Modules mounted side by side hear each other's 40 kHz burst. Fired at the same i
 ## Sensor range
 
 The driver validates measurements within a **200 mm – 4500 mm** window (`AJ_SR04M_DIST_MIN_VALID_MM` / `AJ_SR04M_DIST_MAX_VALID_MM` in `src/aj_sr04m.c`). The AJ-SR04M datasheet advertises up to 8 m on some revisions and the JSN-SR04T up to 6 m, but accuracy degrades significantly past 4.5 m on the modules tested — adjust the upper bound if your module proves reliable further out.
+
+Reaching the far end of that window costs time in modes 1-2, and `aj_sr04m_read_distance()` blocks for it. The RMT capture is not over when the echo falls: it ends once the line has stayed idle for 30 ms, so a 4.5 m target — 26 ms of echo pulse — is only reported some 56 ms after the trigger. The read allows 100 ms for that; budget accordingly when polling several sensors in a row.
 
 Out-of-range conditions are reported as `AJ_SR04M_DIST_NO_ECHO`. Different revisions emit different "no echo" sentinels: some AJ-SR04M units return a value greater than 4500 mm (e.g. `6016`), the JSN-SR04T datasheet specifies plain `0`. Both are caught by the [200, 4500] window check.
 

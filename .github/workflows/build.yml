@@ -235,6 +235,11 @@ jobs:
             else
               idf.py build
             fi
+            # The binary exits with the Unity failure count, but the pipe
+            # to tee discards that status (no `pipefail` here on purpose):
+            # the greps below are the gate, and they fail the step at the
+            # same point without the exit status short-circuiting `set -e`
+            # mid-iteration.
             ./build/aj_sr04m_test_linux.elf | tee "output.${TAG}.log"
             grep -qE "Failures +0 " "output.${TAG}.log"
             grep -q "=== TESTS_DONE ===" "output.${TAG}.log"

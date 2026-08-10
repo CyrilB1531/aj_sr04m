@@ -27,15 +27,19 @@ void tearDown(void) { aj_sr04m_deinit(); }
 void app_main(void) {
   UNITY_BEGIN();
   unity_run_all_tests();
-  UNITY_END();
+  const int failures = UNITY_END();
 
   printf("\n=== TESTS_DONE ===\n");
   fflush(stdout);
 
 #if CONFIG_IDF_TARGET_LINUX
-  /* Clean exit so the gcov runtime flushes .gcda files. */
-  exit(0);
+  /* Clean exit so the gcov runtime flushes .gcda files -- exit() runs the
+   * destructors whatever the status, so reporting the failure count keeps
+   * coverage intact while letting the shell (and any `&&` chain) see a
+   * failing suite as a failure. */
+  exit(failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
 #else
+  (void)failures;
   /* Idle so QEMU stays alive long enough for CI to capture the full output. */
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(1000));

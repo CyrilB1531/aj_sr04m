@@ -254,6 +254,13 @@ esp_err_t aj_sr04m_trigger(aj_sr04m_handle_t handle);
 /**
  * @brief Read the distance measured by a specific sensor instance.
  *
+ * @note The call blocks until the measurement lands or its budget runs out.
+ * Modes 1-2 allow ~100 ms: RMT reports a capture only once the line has been
+ * idle for its threshold, so a 4.5 m echo — 26 ms of pulse plus 30 ms of
+ * idle — completes well after the round trip itself. Modes 3-5 wait on the
+ * module instead: 250 ms for a hardware UART reply, 300 ms on the software
+ * backend, and 20 ms in mode 3, whose frames are already buffered.
+ *
  * @param handle   Handle returned by aj_sr04m_new()
  * @param[out] distance distance in millimeters (valid only if the return
  * value is AJ_SR04M_DIST_OK)

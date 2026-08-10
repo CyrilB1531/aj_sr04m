@@ -142,8 +142,23 @@ struct rmt_mock_state {
   void *last_receive_buffer;
   size_t last_receive_buffer_size;
 
+  /* Idle thresholds the driver asked for, straight from the last
+   * rmt_receive_config_t. signal_range_max_ns is what ends a capture, so it
+   * is the driver's statement of how long a level run may last — the echo
+   * pulse included. */
+  uint32_t last_signal_range_min_ns;
+  uint32_t last_signal_range_max_ns;
+
   bool fire_pulse_on_receive;
   uint32_t fire_pulse_high_us;
+
+  /* Delay, in milliseconds, between the arming and the completion. Zero
+   * fires synchronously inside rmt_receive, which is what most cases want;
+   * a non-zero value defers the callback to a helper task, so the read
+   * really blocks and its timeout is exercised. One deferred capture at a
+   * time — the helper writes into the buffer of the receive that armed it,
+   * so a case must let the completion land before the sensor is deleted. */
+  uint32_t fire_pulse_delay_ms;
 
   /* Bytes to synthesise as a 9600 8N1 line capture instead of the single
    * echo pulse, for the software UART backend. The mock encodes them the way

@@ -53,18 +53,58 @@
  * another channel. The margin above is what buys the fixed size; a capture
  * that reaches capacity is treated as truncated rather than decoded. */
 #define AJ_SR04M_RMT_NUM_SYMBOLS 64
-#define AJ_SR04M_RMT_TIMEOUT_MS 50     /* > round-trip time at max range */
-#define AJ_SR04M_RMT_IDLE_NS 30000000U /* 30 ms idle threshold */
+
+/* Idle threshold (rmt_receive_config_t::signal_range_max_ns). RMT ends a
+ * capture as soon as *one* level run outlasts it — the echo pulse is such a
+ * run, not only the silence that follows it — so the two capture kinds size
+ * it from different worst cases and keep separate constants.
+ *
+ * Modes 1-2, single echo pulse. The floor is the longest pulse the
+ * [200, 4500] mm window still accepts: 4500 mm / 0.1715 mm per us = 26.2 ms.
+ * A shorter threshold would cut a far target's pulse in flight, and the
+ * truncated run is reported like any other: a 6 m wall would come back as a
+ * confident measurement worth the threshold itself instead of NO_ECHO. The
+ * ceiling is the 15-bit RMT duration counter, 32767 ticks at 1 MHz = 32.7 ms.
+ * 30 ms sits inside [26.3, 32.7] with margin on both sides, so every pulse
+ * longer than a valid echo is still measured, still lands above 4500 mm and
+ * is still rejected on its value. */
+#define AJ_SR04M_RMT_ECHO_IDLE_NS 30000000U
+
+/* Modes 4-5 software backend, UART frame. Nothing here ends the capture but
+ * the line going idle after the last stop bit, so the threshold delimits the
+ * frame and has to outlast any gap the module leaves *between* two bytes of
+ * one reply. 30 ms is far above the 1.04 ms of a 9600 baud character, and it
+ * costs latency the reply timeout below already dominates. */
+#define AJ_SR04M_RMT_FRAME_IDLE_NS 30000000U
+
+/* Modes 1-2 read timeout. The read does not wait for the echo's falling edge
+ * but for RMT to declare the capture over, one idle threshold later:
+ *
+ *   echo pulse         <= 30 ms  (a longer level ends the capture on its own)
+ * + idle threshold        30 ms
+ * + 40 ms  for the trigger pulse (1.1 ms in mode 2), the module's
+ *          burst-to-echo latency, and the FreeRTOS tick quantisation —
+ *          pdMS_TO_TICKS() floors to the tick period and the wait may end one
+ *          tick short, i.e. up to 20 ms at the default 100 Hz.
+ *
+ * The 50 ms this used to be was sized on the round trip alone, which is not
+ * what the read waits for: past ~3.4 m the timeout expired while the
+ * measurement was already sitting in the buffer, and the miss surfaced as
+ * NO_ECHO — a sensor fault rather than a driver one. */
+#define AJ_SR04M_RMT_TIMEOUT_MS                                                \
+  (2 * (AJ_SR04M_RMT_ECHO_IDLE_NS / 1000000U) + 40)
 
 /* UART modes (3-5) wait on the module, not on an echo: a reply lands
- * ~100-200 ms after the trigger byte, so the 50 ms above — sized for a
- * 4.5 m round trip — expires long before it. */
+ * ~100-200 ms after the trigger byte, so the echo budget above — sized for a
+ * 4.5 m round trip and its idle threshold — expires long before it. */
 #define AJ_SR04M_UART_REPLY_TIMEOUT_MS 250
 
 /* The software backend waits for the same reply, then for the line to sit
- * idle for AJ_SR04M_RMT_IDLE_NS before RMT reports the capture complete. */
+ * idle for AJ_SR04M_RMT_FRAME_IDLE_NS before RMT reports the capture
+ * complete. */
 #define AJ_SR04M_SW_UART_CAPTURE_TIMEOUT_MS                                    \
-  (AJ_SR04M_UART_REPLY_TIMEOUT_MS + (AJ_SR04M_RMT_IDLE_NS / 1000000U) + 20)
+  (AJ_SR04M_UART_REPLY_TIMEOUT_MS + (AJ_SR04M_RMT_FRAME_IDLE_NS / 1000000U) +  \
+   20)
 
 #define AJ_SR04M_MAX_SENSORS CONFIG_AJ_SR04M_MAX_SENSORS
 
@@ -132,9 +172,15 @@ static esp_err_t aj_sr04m_arm_rmt_capture(aj_sr04m_sensor_t *sensor) {
   xSemaphoreTake(sensor->rx_done_sem, 0);
 
   rmt_receive_config_t rx_cfg = {
-      .signal_range_min_ns = 1000, /* filter glitches < 1 us */
-      .signal_range_max_ns =
-          AJ_SR04M_RMT_IDLE_NS, /* idle threshold = end of frame */
+    .signal_range_min_ns = 1000, /* filter glitches < 1 us */
+  /* Idle threshold, i.e. what ends this capture. The mode is a
+   * compile-time choice and the two capture kinds never coexist, so the
+   * arm picks the threshold sized for the one being armed. */
+#if AJ_SR04M_MODE <= 2
+    .signal_range_max_ns = AJ_SR04M_RMT_ECHO_IDLE_NS,
+#else
+    .signal_range_max_ns = AJ_SR04M_RMT_FRAME_IDLE_NS,
+#endif
   };
   /* A failed arm leaves the receiver idle, so the read that follows would
    * time out and report NO_ECHO — the same status as a sensor pointing at

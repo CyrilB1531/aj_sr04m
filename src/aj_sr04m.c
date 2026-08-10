@@ -99,20 +99,31 @@ static bool IRAM_ATTR rmt_rx_done_cb(rmt_channel_handle_t channel, // NOSONAR
  * carries no dangling handle. Safe to call at any point of the setup
  * sequence: every field is checked before being released.
  *
+ * The order is the reverse of the acquisition, and that is what makes it
+ * safe rather than merely tidy. The channel goes first because rmt_disable()
+ * is the point at which ESP-IDF stops delivering completions: an armed
+ * capture finishing after the semaphore had been deleted would enter
+ * rmt_rx_done_cb() in interrupt context and give a freed handle. Everything
+ * the callback touches — rx_done_sem, and the sensor slot itself, which
+ * holds the rx_num_symbols it writes — therefore has to outlive the channel.
+ *
  * @param sensor         sensor slot to release
  * @param disable_channel true once rmt_enable() has succeeded */
 static void aj_sr04m_release_rmt_resources(aj_sr04m_sensor_t *sensor,
                                            bool disable_channel) {
-  if (sensor->rx_done_sem != NULL) {
-    vSemaphoreDelete(sensor->rx_done_sem);
-    sensor->rx_done_sem = NULL;
-  }
   if (sensor->rx_channel != NULL) {
+    /* A channel that was never enabled delivers nothing and would refuse
+     * rmt_disable(), so the setup exits reached before rmt_enable()
+     * succeeded skip this step. */
     if (disable_channel) {
       rmt_disable(sensor->rx_channel);
     }
     rmt_del_channel(sensor->rx_channel);
     sensor->rx_channel = NULL;
+  }
+  if (sensor->rx_done_sem != NULL) {
+    vSemaphoreDelete(sensor->rx_done_sem);
+    sensor->rx_done_sem = NULL;
   }
   if (sensor->rx_buffer != NULL) {
     free(sensor->rx_buffer);

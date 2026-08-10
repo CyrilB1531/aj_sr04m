@@ -257,6 +257,36 @@ TEST_CASE("init: fails when the RMT semaphore cannot be created",
   TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
   TEST_ASSERT_EQUAL(1, g_heap_mock.semaphore_create_calls);
 }
+
+/* Regression for #38. Teardown used to delete rx_done_sem first and only
+ * then disable the channel: for the length of that window the receiver was
+ * still armed, and a capture completing in it ran rmt_rx_done_cb() in
+ * interrupt context on a freed semaphore. rmt_disable() is where ESP-IDF
+ * stops delivering completions, so it has to come first — as does deleting
+ * the channel, since the sensor slot the callback writes rx_num_symbols into
+ * is memset right after this returns. The synchronous mock cannot reproduce
+ * the race itself; the order it depends on is what is checked here. */
+TEST_CASE("delete: disables the RMT channel before freeing what the ISR "
+          "touches",
+          "[aj_sr04m][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+
+  /* Only the release matters here, not the semaphore setup created. */
+  g_teardown_mock.steps_len = 0;
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_deinit());
+
+  const int disabled = mocks_teardown_step_index(MOCKS_TEARDOWN_RMT_DISABLE);
+  const int deleted = mocks_teardown_step_index(MOCKS_TEARDOWN_RMT_DEL_CHANNEL);
+  const int sem_freed = mocks_teardown_step_index(MOCKS_TEARDOWN_SEM_DELETE);
+
+  TEST_ASSERT_GREATER_OR_EQUAL(0, disabled);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, deleted);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, sem_freed);
+  TEST_ASSERT_LESS_THAN(sem_freed, disabled);
+  TEST_ASSERT_LESS_THAN(sem_freed, deleted);
+}
 #endif /* CONFIG_IDF_TARGET_LINUX */
 
 #endif /* CONFIG_AJ_SR04M_MODE_1 || CONFIG_AJ_SR04M_MODE_2 */

@@ -50,6 +50,29 @@ struct rmt_mock_state g_rmt_mock;
 static int s_stub_rmt_channels[MOCKS_RMT_MAX_CHANNELS];
 static void *s_stub_rmt_user_data[MOCKS_RMT_MAX_CHANNELS];
 static int s_stub_rmt_channels_used;
+
+struct teardown_mock_state g_teardown_mock;
+
+/* Recording stops once full: a saturated log shows up as a step missing
+ * from the sequence rather than as an order silently rewritten. */
+static void mocks_record_teardown(mocks_teardown_step_t step) {
+  if (g_teardown_mock.steps_len < MOCKS_TEARDOWN_MAX_STEPS) {
+    g_teardown_mock.steps[g_teardown_mock.steps_len++] = step;
+  }
+}
+
+int mocks_teardown_step_index(mocks_teardown_step_t step) {
+  for (int i = 0; i < g_teardown_mock.steps_len; i++) {
+    if (g_teardown_mock.steps[i] == step)
+      return i;
+  }
+  return -1;
+}
+#endif
+
+#if CONFIG_IDF_TARGET_LINUX
+/* Defined alongside the queue wraps below. */
+static void mocks_forget_tracked_semaphores(void);
 #endif
 
 void mocks_reset(void) {
@@ -70,6 +93,7 @@ void mocks_reset(void) {
   memset(&g_esp_rom_mock, 0, sizeof(g_esp_rom_mock));
 
   memset(&g_rmt_mock, 0, sizeof(g_rmt_mock));
+  memset(&g_teardown_mock, 0, sizeof(g_teardown_mock));
   memset(s_stub_rmt_user_data, 0, sizeof(s_stub_rmt_user_data));
   s_stub_rmt_channels_used = 0;
   g_rmt_mock.new_rx_channel_ret = ESP_OK;
@@ -80,6 +104,7 @@ void mocks_reset(void) {
 
 #if CONFIG_IDF_TARGET_LINUX
   memset(&g_heap_mock, 0, sizeof(g_heap_mock));
+  mocks_forget_tracked_semaphores();
 #endif
 }
 
@@ -261,11 +286,13 @@ esp_err_t __wrap_rmt_enable(rmt_channel_handle_t channel) {
 
 esp_err_t __wrap_rmt_disable(rmt_channel_handle_t channel) {
   (void)channel;
+  mocks_record_teardown(MOCKS_TEARDOWN_RMT_DISABLE);
   return ESP_OK;
 }
 
 esp_err_t __wrap_rmt_del_channel(rmt_channel_handle_t channel) {
   (void)channel;
+  mocks_record_teardown(MOCKS_TEARDOWN_RMT_DEL_CHANNEL);
   return ESP_OK;
 }
 
@@ -392,6 +419,20 @@ void *__wrap_malloc(size_t size) {
   return __real_malloc(size);
 }
 
+/* Binary semaphores seen since the last mocks_reset(). vSemaphoreDelete() is
+ * a macro over vQueueDelete(), which every queue in the process goes through,
+ * so the teardown log would otherwise fill with disposals that have nothing
+ * to do with the driver. Matching on the handles created as binary
+ * semaphores keeps the wrap as narrow as the create one. */
+#define MOCKS_MAX_TRACKED_SEMAPHORES 16
+static QueueHandle_t s_tracked_semaphores[MOCKS_MAX_TRACKED_SEMAPHORES];
+static int s_tracked_semaphores_used;
+
+static void mocks_forget_tracked_semaphores(void) {
+  memset(s_tracked_semaphores, 0, sizeof(s_tracked_semaphores));
+  s_tracked_semaphores_used = 0;
+}
+
 /* xSemaphoreCreateBinary() is a macro over xQueueGenericCreate(), so the
  * wrap goes on the queue entry point and filters by queue type. */
 extern QueueHandle_t __real_xQueueGenericCreate(UBaseType_t uxQueueLength,
@@ -408,7 +449,30 @@ QueueHandle_t __wrap_xQueueGenericCreate(UBaseType_t uxQueueLength,
       return NULL;
     }
   }
-  return __real_xQueueGenericCreate(uxQueueLength, uxItemSize, ucQueueType);
+
+  QueueHandle_t queue =
+      __real_xQueueGenericCreate(uxQueueLength, uxItemSize, ucQueueType);
+  if (ucQueueType == queueQUEUE_TYPE_BINARY_SEMAPHORE && queue != NULL &&
+      s_tracked_semaphores_used < MOCKS_MAX_TRACKED_SEMAPHORES) {
+    s_tracked_semaphores[s_tracked_semaphores_used++] = queue;
+  }
+  return queue;
+}
+
+extern void __real_vQueueDelete(QueueHandle_t queue);
+
+void __wrap_vQueueDelete(QueueHandle_t queue) {
+  for (int i = 0; i < s_tracked_semaphores_used; i++) {
+    if (s_tracked_semaphores[i] == queue) {
+      mocks_record_teardown(MOCKS_TEARDOWN_SEM_DELETE);
+      /* Forget the handle: the allocator is free to hand the same address
+       * back for an unrelated queue, which would otherwise be logged as a
+       * second teardown of a semaphore already gone. */
+      s_tracked_semaphores[i] = NULL;
+      break;
+    }
+  }
+  __real_vQueueDelete(queue);
 }
 
 #endif /* CONFIG_IDF_TARGET_LINUX */

@@ -422,13 +422,12 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
   };
   if (gpio_config(&trigger_cfg) != ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to configure trigger pin %d", trigger_pin);
-    return NULL;
+    goto fail_release;
   }
 
   if (gpio_set_level(trigger_pin, 0) != ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to set trigger pin %d low", trigger_pin);
-    aj_sr04m_release_trigger_pin(trigger_pin);
-    return NULL;
+    goto fail_release;
   }
 
   /* Allocate RMT RX buffer */
@@ -436,8 +435,7 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
       malloc(AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t));
   if (sensor->rx_buffer == NULL) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to allocate RMT RX buffer");
-    aj_sr04m_release_trigger_pin(trigger_pin);
-    return NULL;
+    goto fail_release;
   }
 
   /* Configure and allocate RMT RX channel */
@@ -450,16 +448,14 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
   if (rmt_new_rx_channel(&rx_chan_cfg, &sensor->rx_channel) != ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to allocate RMT RX channel for pin %d",
              echo_pin);
-    aj_sr04m_release_rmt_resources(sensor, false);
-    return NULL;
+    goto fail_release;
   }
 
   /* Create semaphore for RMT done callback */
   sensor->rx_done_sem = xSemaphoreCreateBinary();
   if (sensor->rx_done_sem == NULL) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to create RMT semaphore");
-    aj_sr04m_release_rmt_resources(sensor, false);
-    return NULL;
+    goto fail_release;
   }
 
   /* Register RMT callback */
@@ -469,15 +465,13 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
   if (rmt_rx_register_event_callbacks(sensor->rx_channel, &cbs, sensor) !=
       ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to register RMT callback");
-    aj_sr04m_release_rmt_resources(sensor, false);
-    return NULL;
+    goto fail_release;
   }
 
   /* Enable RMT channel */
   if (rmt_enable(sensor->rx_channel) != ESP_OK) {
     ESP_LOGE(AJ_SR04M_TAG, "Unable to enable RMT channel");
-    aj_sr04m_release_rmt_resources(sensor, false);
-    return NULL;
+    goto fail_release;
   }
 
 #else
@@ -529,14 +523,14 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
         gpio_set_level(trigger_pin, 1) != ESP_OK) {
       ESP_LOGE(AJ_SR04M_TAG, "Unable to configure SW UART TX pin %d",
                trigger_pin);
-      return NULL;
+      goto fail_release;
     }
 
     sensor->rx_buffer =
         malloc(AJ_SR04M_RMT_NUM_SYMBOLS * sizeof(rmt_symbol_word_t));
     if (sensor->rx_buffer == NULL) {
       ESP_LOGE(AJ_SR04M_TAG, "Unable to allocate SW UART RX buffer");
-      return NULL;
+      goto fail_release;
     }
 
     rmt_rx_channel_config_t rx_chan_cfg = {
@@ -547,25 +541,21 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
     };
     if (rmt_new_rx_channel(&rx_chan_cfg, &sensor->rx_channel) != ESP_OK) {
       ESP_LOGE(AJ_SR04M_TAG, "Unable to allocate SW UART RMT channel");
-      aj_sr04m_release_rmt_resources(sensor, false);
-      aj_sr04m_release_trigger_pin(trigger_pin);
-      return NULL;
+      goto fail_release;
     }
 
     sensor->rx_done_sem = xSemaphoreCreateBinary();
     if (sensor->rx_done_sem == NULL) {
-      aj_sr04m_release_rmt_resources(sensor, false);
-      aj_sr04m_release_trigger_pin(trigger_pin);
-      return NULL;
+      ESP_LOGE(AJ_SR04M_TAG, "Unable to create SW UART RMT semaphore");
+      goto fail_release;
     }
 
     rmt_rx_event_callbacks_t cbs = {.on_recv_done = rmt_rx_done_cb};
     if (rmt_rx_register_event_callbacks(sensor->rx_channel, &cbs, sensor) !=
             ESP_OK ||
         rmt_enable(sensor->rx_channel) != ESP_OK) {
-      aj_sr04m_release_rmt_resources(sensor, false);
-      aj_sr04m_release_trigger_pin(trigger_pin);
-      return NULL;
+      ESP_LOGE(AJ_SR04M_TAG, "Unable to start SW UART RMT capture");
+      goto fail_release;
     }
     ESP_LOGI(AJ_SR04M_TAG, "Sensor UART(SW/RMT): tx=%d rx=%d", trigger_pin,
              echo_pin);
@@ -579,6 +569,27 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
            echo_pin);
 
   return (aj_sr04m_handle_t)sensor;
+
+  /* Single unwind for every setup step that owns the TRIG / software UART TX
+   * pin. Splitting it per exit is how the two branches came to release
+   * opposite halves of what they had taken: modes 1-2 handed the pin back on
+   * the early exits only, the software backend on the RMT ones only, and a
+   * sensor that failed to build kept driving the line either way — low in
+   * modes 1-2, high on the software backend, which is the UART idle level a
+   * module reads as a peer that is still there.
+   *
+   * Both releases tolerate being reached before the matching acquisition:
+   * aj_sr04m_release_rmt_resources() skips the fields still NULL, and
+   * reconfiguring an untouched pin as a high-impedance input costs nothing.
+   * That is what lets even the gpio_config() failure come through here —
+   * that call applies the pin one setting at a time, so it can fail with the
+   * pin already an output, and the exit cannot tell which. The hardware UART
+   * backend never reaches this label: its pins belong to the UART
+   * peripheral, and uart_driver_delete() is what hands them back. */
+fail_release:
+  aj_sr04m_release_rmt_resources(sensor, false);
+  aj_sr04m_release_trigger_pin(sensor->trigger_pin);
+  return NULL;
 }
 
 void aj_sr04m_delete(aj_sr04m_handle_t handle) {

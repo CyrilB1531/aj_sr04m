@@ -18,6 +18,7 @@ idf_component_register(
         "${CASES}/test_mode4_uart_binary.c"
         "${CASES}/test_mode5_uart_ascii.c"
         "${CASES}/test_multi_sensor.c"
+        "${CASES}/test_locking.c"
     INCLUDE_DIRS "${CASES}" "${CMAKE_CURRENT_LIST_DIR}/../../../priv_include"
     # esp_driver_rmt has no sources on the linux target but still exports its
     # public headers, so the mocks build against the very same

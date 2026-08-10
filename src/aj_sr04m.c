@@ -74,6 +74,42 @@ static aj_sr04m_handle_t s_sensor_handles[AJ_SR04M_MAX_SENSORS];
 static int s_sensor_count = 0;
 static bool s_initialized = false;
 
+/* Guards every read and write of the four variables above. Without it, a
+ * task deleting a sensor shifts s_sensor_handles under a task walking it in
+ * aj_sr04m_trigger_all() — and that walk yields on the trigger stagger, so
+ * the window is milliseconds wide, not instructions wide. */
+static SemaphoreHandle_t s_table_mutex;
+static StaticSemaphore_t s_table_mutex_storage;
+
+/* The mutex is built by a constructor, out of static storage, for three
+ * reasons a create-on-first-use scheme cannot satisfy:
+ *
+ *  - it exists before the first caller. Testing the handle for NULL and
+ *    creating it when unset is itself the race it is meant to close, and no
+ *    entry point of this driver is guaranteed to run first.
+ *  - it cannot fail, so no caller has to cope with a table that has no lock.
+ *    xSemaphoreCreateMutexStatic() only ever hands back a handle onto the
+ *    buffer above; there is no allocation to run out of.
+ *  - it outlives aj_sr04m_deinit(). Destroying it there and recreating it in
+ *    aj_sr04m_init() would move the race rather than remove it: that
+ *    destruction would itself need serialising against the callers it races.
+ *
+ * Constructors run single-threaded before any task exists: on ESP targets
+ * from do_global_ctors(), after the heap is up and before the scheduler
+ * starts; on the linux port before main(). */
+static void __attribute__((constructor)) aj_sr04m_table_mutex_init(void) {
+  s_table_mutex = xSemaphoreCreateMutexStatic(&s_table_mutex_storage);
+}
+
+/* Blocks until the table is ours. No entry point of this driver is callable
+ * from an interrupt handler, so an indefinite wait is the right one: the
+ * only holders are other driver calls, which all release it. */
+static void aj_sr04m_table_lock(void) {
+  xSemaphoreTake(s_table_mutex, portMAX_DELAY);
+}
+
+static void aj_sr04m_table_unlock(void) { xSemaphoreGive(s_table_mutex); }
+
 /* RMT RX done callback: shared by modes 1-2 echo capture and the modes 4-5
  * software UART backend. The signature is imposed by ESP-IDF's
  * rmt_rx_done_callback_t; the channel is not needed, since the sensor
@@ -286,6 +322,11 @@ aj_sr04m_dist_status_t aj_sr04m_parse_ascii_frame(const char *data,
   return AJ_SR04M_DIST_OK;
 }
 
+/* Everything from here to aj_sr04m_read_all_locked() touches the sensor
+ * table and must run with s_table_mutex held. The public entry points at the
+ * bottom of the file are thin wrappers that take the lock, call the matching
+ * _locked helper and release it — which is also what keeps the many early
+ * `return`s of aj_sr04m_new_locked() from having to remember to unlock. */
 static void aj_sr04m_register_handle(aj_sr04m_handle_t handle) {
   if (s_sensor_count < AJ_SR04M_MAX_SENSORS) {
     s_sensor_handles[s_sensor_count++] = handle;
@@ -322,21 +363,26 @@ static void aj_sr04m_unregister_handle(const struct aj_sr04m_sensor *handle) {
   s_sensor_count--;
 }
 
+static aj_sr04m_handle_t aj_sr04m_new_locked(int trigger_pin, int echo_pin,
+                                             uint8_t trigger_byte,
+                                             int uart_num);
+static void aj_sr04m_delete_locked(aj_sr04m_handle_t handle);
+
 static void aj_sr04m_cleanup_configured_sensors(void) {
   while (s_sensor_count > 0) {
-    aj_sr04m_delete(s_sensor_handles[0]);
+    aj_sr04m_delete_locked(s_sensor_handles[0]);
   }
 }
 
 static esp_err_t aj_sr04m_configure_sensors_from_kconfig(void) {
-  const struct aj_sr04m_sensor *handle =
-      aj_sr04m_new(CONFIG_AJ_SR04M_TRIGGER_PIN, CONFIG_AJ_SR04M_ECHO_PIN,
-                   CONFIG_AJ_SR04M_TRIGGER_BYTE, AJ_SR04M_SENSOR_1_UART_PORT);
+  const struct aj_sr04m_sensor *handle = aj_sr04m_new_locked(
+      CONFIG_AJ_SR04M_TRIGGER_PIN, CONFIG_AJ_SR04M_ECHO_PIN,
+      CONFIG_AJ_SR04M_TRIGGER_BYTE, AJ_SR04M_SENSOR_1_UART_PORT);
   if (handle == NULL)
     return ESP_ERR_INVALID_STATE;
 
 #if AJ_SR04M_MAX_SENSORS >= 2
-  handle = aj_sr04m_new(
+  handle = aj_sr04m_new_locked(
       CONFIG_AJ_SR04M_SENSOR_2_TRIGGER_PIN, CONFIG_AJ_SR04M_SENSOR_2_ECHO_PIN,
       CONFIG_AJ_SR04M_TRIGGER_BYTE, AJ_SR04M_SENSOR_2_UART_PORT);
   if (handle == NULL)
@@ -344,7 +390,7 @@ static esp_err_t aj_sr04m_configure_sensors_from_kconfig(void) {
 #endif
 
 #if AJ_SR04M_MAX_SENSORS >= 3
-  handle = aj_sr04m_new(
+  handle = aj_sr04m_new_locked(
       CONFIG_AJ_SR04M_SENSOR_3_TRIGGER_PIN, CONFIG_AJ_SR04M_SENSOR_3_ECHO_PIN,
       CONFIG_AJ_SR04M_TRIGGER_BYTE, AJ_SR04M_SENSOR_3_UART_PORT);
   if (handle == NULL)
@@ -352,7 +398,7 @@ static esp_err_t aj_sr04m_configure_sensors_from_kconfig(void) {
 #endif
 
 #if AJ_SR04M_MAX_SENSORS >= 4
-  handle = aj_sr04m_new(
+  handle = aj_sr04m_new_locked(
       CONFIG_AJ_SR04M_SENSOR_4_TRIGGER_PIN, CONFIG_AJ_SR04M_SENSOR_4_ECHO_PIN,
       CONFIG_AJ_SR04M_TRIGGER_BYTE, AJ_SR04M_SENSOR_4_UART_PORT);
   if (handle == NULL)
@@ -363,40 +409,48 @@ static esp_err_t aj_sr04m_configure_sensors_from_kconfig(void) {
 }
 
 esp_err_t aj_sr04m_init(void) {
-  if (s_initialized)
-    return ESP_OK;
+  aj_sr04m_table_lock();
 
-  memset(s_sensors, 0, sizeof(s_sensors));
-  memset(s_sensor_handles, 0, sizeof(s_sensor_handles));
-  s_sensor_count = 0;
-  s_initialized = true;
+  /* Single exit, so the unlock cannot be skipped by a path added later. */
+  esp_err_t err = ESP_OK;
+  if (!s_initialized) {
+    memset(s_sensors, 0, sizeof(s_sensors));
+    memset(s_sensor_handles, 0, sizeof(s_sensor_handles));
+    s_sensor_count = 0;
+    s_initialized = true;
 
-  esp_err_t err = aj_sr04m_configure_sensors_from_kconfig();
-  if (err != ESP_OK) {
-    aj_sr04m_cleanup_configured_sensors();
-    s_initialized = false;
-    return err;
-  }
+    err = aj_sr04m_configure_sensors_from_kconfig();
+    if (err != ESP_OK) {
+      aj_sr04m_cleanup_configured_sensors();
+      s_initialized = false;
+    }
 
 #if AJ_SR04M_MODE >= 3
-  /* UART modes: global driver setup if needed (per-sensor UART config
-   * happens in aj_sr04m_new) */
+    /* UART modes: global driver setup if needed (per-sensor UART config
+     * happens in aj_sr04m_new) */
 #endif
+  }
 
-  return ESP_OK;
+  aj_sr04m_table_unlock();
+  return err;
 }
 
 esp_err_t aj_sr04m_deinit(void) {
+  aj_sr04m_table_lock();
+
   aj_sr04m_cleanup_configured_sensors();
   memset(s_sensors, 0, sizeof(s_sensors));
   memset(s_sensor_handles, 0, sizeof(s_sensor_handles));
   s_sensor_count = 0;
   s_initialized = false;
+
+  aj_sr04m_table_unlock();
   return ESP_OK;
 }
 
-aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
-                               uint8_t trigger_byte, int uart_num) {
+static aj_sr04m_handle_t aj_sr04m_new_locked(int trigger_pin, int echo_pin,
+                                             uint8_t trigger_byte,
+                                             int uart_num) {
   if (!s_initialized) {
     ESP_LOGE(AJ_SR04M_TAG,
              "Driver not initialized. Call aj_sr04m_init() first.");
@@ -592,7 +646,7 @@ aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
   return (aj_sr04m_handle_t)sensor;
 }
 
-void aj_sr04m_delete(aj_sr04m_handle_t handle) {
+static void aj_sr04m_delete_locked(aj_sr04m_handle_t handle) {
   if (handle == NULL)
     return;
 
@@ -621,16 +675,14 @@ void aj_sr04m_delete(aj_sr04m_handle_t handle) {
   memset(sensor, 0, sizeof(*sensor));
 }
 
-int aj_sr04m_get_sensor_count(void) { return s_sensor_count; }
-
-aj_sr04m_handle_t aj_sr04m_get_handle(int index) {
+static aj_sr04m_handle_t aj_sr04m_get_handle_locked(int index) {
   if (index < 0 || index >= aj_sr04m_registered_count())
     return NULL;
 
   return s_sensor_handles[index];
 }
 
-esp_err_t aj_sr04m_trigger_all(void) {
+static esp_err_t aj_sr04m_trigger_all_locked(void) {
   if (!s_initialized || s_sensor_count == 0)
     return ESP_ERR_INVALID_STATE;
 
@@ -659,9 +711,10 @@ esp_err_t aj_sr04m_trigger_all(void) {
   return triggered > 0 ? ESP_OK : last_err;
 }
 
-esp_err_t aj_sr04m_read_all(int16_t *distances,
-                            aj_sr04m_dist_status_t *statuses, int max_sensors,
-                            int *out_sensor_count) {
+static esp_err_t aj_sr04m_read_all_locked(int16_t *distances,
+                                          aj_sr04m_dist_status_t *statuses,
+                                          int max_sensors,
+                                          int *out_sensor_count) {
   if (distances == NULL || statuses == NULL || out_sensor_count == NULL)
     return ESP_ERR_INVALID_ARG;
   if (!s_initialized || s_sensor_count == 0)
@@ -678,6 +731,70 @@ esp_err_t aj_sr04m_read_all(int16_t *distances,
   return ESP_OK;
 }
 
+/* Public entry points onto the table. Each one is the lock, the matching
+ * _locked helper, and the unlock — nothing else, so no error path can grow
+ * its way out of the critical section.
+ *
+ * aj_sr04m_trigger_all() and aj_sr04m_read_all() hold the lock for their
+ * whole run, and both block inside it: the first on the inter-trigger delay,
+ * the second on each sensor's capture semaphore. A measurement cycle is
+ * therefore serialised against sensor management and against another cycle.
+ * That is deliberate: the alternative is a table that changes shape halfway
+ * through a walk that lasts milliseconds. The contract is spelled out for
+ * callers in the thread-safety section of aj_sr04m.h. */
+aj_sr04m_handle_t aj_sr04m_new(int trigger_pin, int echo_pin,
+                               uint8_t trigger_byte, int uart_num) {
+  aj_sr04m_table_lock();
+  aj_sr04m_handle_t handle =
+      aj_sr04m_new_locked(trigger_pin, echo_pin, trigger_byte, uart_num);
+  aj_sr04m_table_unlock();
+  return handle;
+}
+
+void aj_sr04m_delete(aj_sr04m_handle_t handle) {
+  aj_sr04m_table_lock();
+  aj_sr04m_delete_locked(handle);
+  aj_sr04m_table_unlock();
+}
+
+int aj_sr04m_get_sensor_count(void) {
+  aj_sr04m_table_lock();
+  const int count = s_sensor_count;
+  aj_sr04m_table_unlock();
+  return count;
+}
+
+aj_sr04m_handle_t aj_sr04m_get_handle(int index) {
+  aj_sr04m_table_lock();
+  aj_sr04m_handle_t handle = aj_sr04m_get_handle_locked(index);
+  aj_sr04m_table_unlock();
+  return handle;
+}
+
+esp_err_t aj_sr04m_trigger_all(void) {
+  aj_sr04m_table_lock();
+  const esp_err_t err = aj_sr04m_trigger_all_locked();
+  aj_sr04m_table_unlock();
+  return err;
+}
+
+esp_err_t aj_sr04m_read_all(int16_t *distances,
+                            aj_sr04m_dist_status_t *statuses, int max_sensors,
+                            int *out_sensor_count) {
+  aj_sr04m_table_lock();
+  const esp_err_t err = aj_sr04m_read_all_locked(distances, statuses,
+                                                 max_sensors, out_sensor_count);
+  aj_sr04m_table_unlock();
+  return err;
+}
+
+/* Neither of the two below takes the table lock: they work on a handle the
+ * caller supplies and never look at the table. Adding the lock would buy
+ * nothing — the handle is already a raw pointer the caller holds, so a
+ * concurrent aj_sr04m_delete() of that same sensor is unsafe with or without
+ * it — while making every per-sensor read serialise against every other one.
+ * See the thread-safety section of aj_sr04m.h for what that leaves callers
+ * responsible for. */
 esp_err_t aj_sr04m_trigger(aj_sr04m_handle_t handle) {
   if (handle == NULL)
     return ESP_ERR_INVALID_ARG;

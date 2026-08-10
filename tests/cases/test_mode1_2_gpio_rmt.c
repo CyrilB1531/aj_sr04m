@@ -23,6 +23,8 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "unity.h"
 
 #include "driver/gpio.h"
@@ -139,6 +141,71 @@ TEST_CASE("read: OK with synthetic 8746 us pulse -> ~1500 mm",
   TEST_ASSERT_INT16_WITHIN(1, 1500, dist);
 }
 
+/* Regression for #37. The echo capture is armed with an idle threshold, and
+ * RMT ends a capture on the first level run that outlasts it — the echo pulse
+ * being exactly such a run. A threshold shorter than the longest accepted
+ * echo therefore cuts a far target's pulse and hands the fragment over as a
+ * measurement, so the bounds below are the ones the constant has to live
+ * within, whatever value it takes. */
+TEST_CASE("trigger: arms the echo capture with a usable idle threshold",
+          "[aj_sr04m][trigger]") {
+  mocks_reset();
+  aj_sr04m_init();
+  aj_sr04m_trigger_all();
+
+  /* Floor: 4500 mm at 0.1715 mm/µs is a 26239 µs pulse, and it must fit
+   * whole inside the capture. */
+  TEST_ASSERT_GREATER_THAN_UINT32(26239u * 1000u,
+                                  g_rmt_mock.last_signal_range_max_ns);
+  /* Ceiling: the RMT duration counter is 15 bits, so 32767 ticks at the
+   * 1 MHz resolution this driver asks for. */
+  TEST_ASSERT_LESS_OR_EQUAL_UINT32(32767u * 1000u,
+                                   g_rmt_mock.last_signal_range_max_ns);
+}
+
+/* Regression for #37. A 4.5 m target is inside the window the driver
+ * validates and the README advertises. The mock cuts the synthetic pulse at
+ * the armed idle threshold, as the hardware does, so shrinking that threshold
+ * to "a couple of milliseconds is plenty for a single pulse" reports this
+ * target at the threshold's own distance instead. */
+TEST_CASE("read: OK with a 26000 us pulse -> ~4459 mm", "[aj_sr04m][read]") {
+  mocks_reset();
+  g_rmt_mock.fire_pulse_on_receive = true;
+  g_rmt_mock.fire_pulse_high_us = 26000;
+
+  aj_sr04m_init();
+  aj_sr04m_trigger_all();
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK, mocks_read_one(&dist));
+  TEST_ASSERT_INT16_WITHIN(1, 4459, dist);
+}
+
+/* Regression for #37. The capture is not over when the echo falls: RMT
+ * reports it one full idle threshold later, so a 4.5 m target completes
+ * around 26 ms of pulse + 30 ms of idle after the trigger. The read used to
+ * give up at 50 ms and call that NO_ECHO with the measurement already in the
+ * buffer. Here the completion is deferred by a realistic 60 ms, which no
+ * 50 ms budget can wait out. */
+TEST_CASE("read: waits for a far target's capture to complete",
+          "[aj_sr04m][read]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  aj_sr04m_init();
+
+  g_rmt_mock.fire_pulse_on_receive = true;
+  g_rmt_mock.fire_pulse_high_us = 26000; /* ~4459 mm */
+  g_rmt_mock.fire_pulse_delay_ms = 60;
+
+  aj_sr04m_trigger_all();
+  int16_t dist = 0;
+  TEST_ASSERT_EQUAL(AJ_SR04M_DIST_OK, mocks_read_one(&dist));
+  TEST_ASSERT_INT16_WITHIN(1, 4459, dist);
+
+  /* Let the helper task retire while the sensor it writes into is still
+   * alive, whatever the read decided. */
+  vTaskDelay(pdMS_TO_TICKS(80));
+}
+
 TEST_CASE("read: NO_ECHO when pulse maps below 200 mm", "[aj_sr04m][read]") {
   mocks_reset();
   /* 100 µs → ~17 mm, well under the 200 mm minimum. */
@@ -167,7 +234,7 @@ TEST_CASE("read: NO_ECHO when no callback fires (semaphore timeout)",
           "[aj_sr04m][read]") {
   mocks_reset();
   /* fire_pulse_on_receive stays false → rmt_receive does not invoke the
-   * callback → xSemaphoreTake times out (50 ms) → NO_ECHO. */
+   * callback → xSemaphoreTake times out → NO_ECHO. */
   aj_sr04m_init();
   aj_sr04m_trigger_all();
   int16_t dist = 0;
@@ -270,6 +337,36 @@ TEST_CASE("init: fails when the RMT semaphore cannot be created",
 
   assert_init_fails_and_releases_trigger_pin();
   TEST_ASSERT_EQUAL(1, g_heap_mock.semaphore_create_calls);
+}
+
+/* Regression for #38. Teardown used to delete rx_done_sem first and only
+ * then disable the channel: for the length of that window the receiver was
+ * still armed, and a capture completing in it ran rmt_rx_done_cb() in
+ * interrupt context on a freed semaphore. rmt_disable() is where ESP-IDF
+ * stops delivering completions, so it has to come first — as does deleting
+ * the channel, since the sensor slot the callback writes rx_num_symbols into
+ * is memset right after this returns. The synchronous mock cannot reproduce
+ * the race itself; the order it depends on is what is checked here. */
+TEST_CASE("delete: disables the RMT channel before freeing what the ISR "
+          "touches",
+          "[aj_sr04m][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+
+  /* Only the release matters here, not the semaphore setup created. */
+  g_teardown_mock.steps_len = 0;
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_deinit());
+
+  const int disabled = mocks_teardown_step_index(MOCKS_TEARDOWN_RMT_DISABLE);
+  const int deleted = mocks_teardown_step_index(MOCKS_TEARDOWN_RMT_DEL_CHANNEL);
+  const int sem_freed = mocks_teardown_step_index(MOCKS_TEARDOWN_SEM_DELETE);
+
+  TEST_ASSERT_GREATER_OR_EQUAL(0, disabled);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, deleted);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, sem_freed);
+  TEST_ASSERT_LESS_THAN(sem_freed, disabled);
+  TEST_ASSERT_LESS_THAN(sem_freed, deleted);
 }
 #endif /* CONFIG_IDF_TARGET_LINUX */
 

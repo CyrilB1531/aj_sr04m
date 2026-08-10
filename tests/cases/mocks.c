@@ -10,6 +10,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 
 #include "aj_sr04m_sw_uart.h"
 
@@ -50,6 +51,29 @@ struct rmt_mock_state g_rmt_mock;
 static int s_stub_rmt_channels[MOCKS_RMT_MAX_CHANNELS];
 static void *s_stub_rmt_user_data[MOCKS_RMT_MAX_CHANNELS];
 static int s_stub_rmt_channels_used;
+
+struct teardown_mock_state g_teardown_mock;
+
+/* Recording stops once full: a saturated log shows up as a step missing
+ * from the sequence rather than as an order silently rewritten. */
+static void mocks_record_teardown(mocks_teardown_step_t step) {
+  if (g_teardown_mock.steps_len < MOCKS_TEARDOWN_MAX_STEPS) {
+    g_teardown_mock.steps[g_teardown_mock.steps_len++] = step;
+  }
+}
+
+int mocks_teardown_step_index(mocks_teardown_step_t step) {
+  for (int i = 0; i < g_teardown_mock.steps_len; i++) {
+    if (g_teardown_mock.steps[i] == step)
+      return i;
+  }
+  return -1;
+}
+#endif
+
+#if CONFIG_IDF_TARGET_LINUX
+/* Defined alongside the queue wraps below. */
+static void mocks_forget_tracked_semaphores(void);
 #endif
 
 void mocks_reset(void) {
@@ -70,6 +94,7 @@ void mocks_reset(void) {
   memset(&g_esp_rom_mock, 0, sizeof(g_esp_rom_mock));
 
   memset(&g_rmt_mock, 0, sizeof(g_rmt_mock));
+  memset(&g_teardown_mock, 0, sizeof(g_teardown_mock));
   memset(s_stub_rmt_user_data, 0, sizeof(s_stub_rmt_user_data));
   s_stub_rmt_channels_used = 0;
   g_rmt_mock.new_rx_channel_ret = ESP_OK;
@@ -80,6 +105,7 @@ void mocks_reset(void) {
 
 #if CONFIG_IDF_TARGET_LINUX
   memset(&g_heap_mock, 0, sizeof(g_heap_mock));
+  mocks_forget_tracked_semaphores();
 #endif
 }
 
@@ -261,11 +287,13 @@ esp_err_t __wrap_rmt_enable(rmt_channel_handle_t channel) {
 
 esp_err_t __wrap_rmt_disable(rmt_channel_handle_t channel) {
   (void)channel;
+  mocks_record_teardown(MOCKS_TEARDOWN_RMT_DISABLE);
   return ESP_OK;
 }
 
 esp_err_t __wrap_rmt_del_channel(rmt_channel_handle_t channel) {
   (void)channel;
+  mocks_record_teardown(MOCKS_TEARDOWN_RMT_DEL_CHANNEL);
   return ESP_OK;
 }
 
@@ -315,43 +343,95 @@ static size_t mocks_encode_uart_capture(rmt_symbol_word_t *symbols,
   return (runs + 1) / 2;
 }
 
+/* Writes the synthetic capture into @p buffer and fires the driver's RX-done
+ * callback, standing in for the hardware reporting a finished capture.
+ *
+ * @p idle_max_us is the idle threshold the driver armed with, and it also
+ * caps the echo pulse the mock may report: RMT stops on the first level run
+ * that outlasts the threshold, so a pulse longer than it reaches the driver
+ * cut at exactly that length, not at its real one. Modelling the cut is what
+ * makes a too-short threshold fail here rather than on a wall 4.5 m away. */
+static void mocks_fire_rx_done(rmt_channel_handle_t channel, void *buffer,
+                               size_t buffer_size, uint32_t idle_max_us) {
+  const size_t capacity = buffer_size / sizeof(rmt_symbol_word_t);
+  rmt_symbol_word_t *sym = (rmt_symbol_word_t *)buffer;
+  size_t written;
+
+  memset(sym, 0, buffer_size);
+  if (g_rmt_mock.fire_uart_bytes != NULL && g_rmt_mock.fire_uart_len > 0) {
+    written = mocks_encode_uart_capture(sym, capacity);
+  } else {
+    uint32_t high_us = g_rmt_mock.fire_pulse_high_us;
+    if (idle_max_us > 0 && high_us > idle_max_us)
+      high_us = idle_max_us;
+    sym->level0 = 1;
+    sym->duration0 = (uint16_t)high_us;
+    written = 1;
+  }
+
+  rmt_rx_done_event_data_t evt = {
+      .num_symbols = g_rmt_mock.fire_capture_fills_buffer ? capacity : written,
+      .received_symbols = sym,
+  };
+  const int index = mocks_rmt_channel_index(channel);
+  g_rmt_mock.on_recv_done(channel, &evt,
+                          index >= 0 ? s_stub_rmt_user_data[index] : NULL);
+}
+
+/* Pending deferred completion. A single slot: the cases that ask for one
+ * drive a single sensor and wait for it before ending. */
+struct mocks_deferred_rx {
+  rmt_channel_handle_t channel;
+  void *buffer;
+  size_t buffer_size;
+  uint32_t idle_max_us;
+  uint32_t delay_ms;
+};
+
+static struct mocks_deferred_rx s_deferred_rx;
+
+static void mocks_deferred_rx_task(void *arg) {
+  struct mocks_deferred_rx *deferred = (struct mocks_deferred_rx *)arg;
+
+  vTaskDelay(pdMS_TO_TICKS(deferred->delay_ms));
+  if (g_rmt_mock.on_recv_done != NULL)
+    mocks_fire_rx_done(deferred->channel, deferred->buffer,
+                       deferred->buffer_size, deferred->idle_max_us);
+  vTaskDelete(NULL);
+}
+
 esp_err_t __wrap_rmt_receive(rmt_channel_handle_t channel, void *buffer,
                              size_t buffer_size,
                              const rmt_receive_config_t *cfg) {
-  (void)channel;
-  (void)cfg;
   g_rmt_mock.receive_calls++;
   g_rmt_mock.last_receive_buffer = buffer;
   g_rmt_mock.last_receive_buffer_size = buffer_size;
+  if (cfg != NULL) {
+    g_rmt_mock.last_signal_range_min_ns = cfg->signal_range_min_ns;
+    g_rmt_mock.last_signal_range_max_ns = cfg->signal_range_max_ns;
+  }
 
-  /* Synthesise an immediate RX-done event with one high-pulse symbol.
-   * This stands in for the hardware that would otherwise call back
-   * asynchronously when the echo arrives. The callback gives the
-   * semaphore that aj_sr04m_read_duration() blocks on, so it returns
-   * without waiting for the timeout. */
+  /* Synthesise the RX-done event the hardware would raise once the echo has
+   * arrived and the line has gone quiet. Firing it from here returns the
+   * read without waiting; fire_pulse_delay_ms hands the completion to a task
+   * instead, so the read blocks for real and its timeout is what decides. */
   if (g_rmt_mock.fire_pulse_on_receive && g_rmt_mock.on_recv_done && buffer &&
       buffer_size >= sizeof(rmt_symbol_word_t)) {
-    const size_t capacity = buffer_size / sizeof(rmt_symbol_word_t);
-    rmt_symbol_word_t *sym = (rmt_symbol_word_t *)buffer;
-    size_t written;
+    const uint32_t idle_max_us = g_rmt_mock.last_signal_range_max_ns / 1000U;
 
-    memset(sym, 0, buffer_size);
-    if (g_rmt_mock.fire_uart_bytes != NULL && g_rmt_mock.fire_uart_len > 0) {
-      written = mocks_encode_uart_capture(sym, capacity);
+    if (g_rmt_mock.fire_pulse_delay_ms == 0) {
+      mocks_fire_rx_done(channel, buffer, buffer_size, idle_max_us);
     } else {
-      sym->level0 = 1;
-      sym->duration0 = (uint16_t)g_rmt_mock.fire_pulse_high_us;
-      written = 1;
+      s_deferred_rx = (struct mocks_deferred_rx){
+          .channel = channel,
+          .buffer = buffer,
+          .buffer_size = buffer_size,
+          .idle_max_us = idle_max_us,
+          .delay_ms = g_rmt_mock.fire_pulse_delay_ms,
+      };
+      xTaskCreate(mocks_deferred_rx_task, "mock_rx_done", 4096, &s_deferred_rx,
+                  5, NULL);
     }
-
-    rmt_rx_done_event_data_t evt = {
-        .num_symbols =
-            g_rmt_mock.fire_capture_fills_buffer ? capacity : written,
-        .received_symbols = sym,
-    };
-    const int index = mocks_rmt_channel_index(channel);
-    g_rmt_mock.on_recv_done(channel, &evt,
-                            index >= 0 ? s_stub_rmt_user_data[index] : NULL);
   }
   return g_rmt_mock.receive_ret;
 }
@@ -392,6 +472,20 @@ void *__wrap_malloc(size_t size) {
   return __real_malloc(size);
 }
 
+/* Binary semaphores seen since the last mocks_reset(). vSemaphoreDelete() is
+ * a macro over vQueueDelete(), which every queue in the process goes through,
+ * so the teardown log would otherwise fill with disposals that have nothing
+ * to do with the driver. Matching on the handles created as binary
+ * semaphores keeps the wrap as narrow as the create one. */
+#define MOCKS_MAX_TRACKED_SEMAPHORES 16
+static QueueHandle_t s_tracked_semaphores[MOCKS_MAX_TRACKED_SEMAPHORES];
+static int s_tracked_semaphores_used;
+
+static void mocks_forget_tracked_semaphores(void) {
+  memset(s_tracked_semaphores, 0, sizeof(s_tracked_semaphores));
+  s_tracked_semaphores_used = 0;
+}
+
 /* xSemaphoreCreateBinary() is a macro over xQueueGenericCreate(), so the
  * wrap goes on the queue entry point and filters by queue type. */
 extern QueueHandle_t __real_xQueueGenericCreate(UBaseType_t uxQueueLength,
@@ -408,7 +502,30 @@ QueueHandle_t __wrap_xQueueGenericCreate(UBaseType_t uxQueueLength,
       return NULL;
     }
   }
-  return __real_xQueueGenericCreate(uxQueueLength, uxItemSize, ucQueueType);
+
+  QueueHandle_t queue =
+      __real_xQueueGenericCreate(uxQueueLength, uxItemSize, ucQueueType);
+  if (ucQueueType == queueQUEUE_TYPE_BINARY_SEMAPHORE && queue != NULL &&
+      s_tracked_semaphores_used < MOCKS_MAX_TRACKED_SEMAPHORES) {
+    s_tracked_semaphores[s_tracked_semaphores_used++] = queue;
+  }
+  return queue;
+}
+
+extern void __real_vQueueDelete(QueueHandle_t queue);
+
+void __wrap_vQueueDelete(QueueHandle_t queue) {
+  for (int i = 0; i < s_tracked_semaphores_used; i++) {
+    if (s_tracked_semaphores[i] == queue) {
+      mocks_record_teardown(MOCKS_TEARDOWN_SEM_DELETE);
+      /* Forget the handle: the allocator is free to hand the same address
+       * back for an unrelated queue, which would otherwise be logged as a
+       * second teardown of a semaphore already gone. */
+      s_tracked_semaphores[i] = NULL;
+      break;
+    }
+  }
+  __real_vQueueDelete(queue);
 }
 
 #endif /* CONFIG_IDF_TARGET_LINUX */

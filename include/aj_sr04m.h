@@ -6,6 +6,45 @@
 
 #pragma once
 
+/**
+ * @file aj_sr04m.h
+ * @brief Public API of the AJ-SR04M / JSN-SR04T ultrasonic distance driver.
+ *
+ * @section aj_sr04m_thread_safety Thread safety
+ *
+ * The driver keeps its sensors in one table shared by every entry point, and
+ * that table is protected by an internal mutex. These functions may therefore
+ * be called from several tasks at once, in any order:
+ * aj_sr04m_init(), aj_sr04m_deinit(), aj_sr04m_new(), aj_sr04m_delete(),
+ * aj_sr04m_get_handle(), aj_sr04m_get_sensor_count(), aj_sr04m_trigger_all()
+ * and aj_sr04m_read_all().
+ *
+ * The mutex is held for the whole of aj_sr04m_trigger_all() and
+ * aj_sr04m_read_all(), and both block while holding it — the first on the
+ * delay between triggers, the second on each sensor's capture. A measurement
+ * cycle is therefore serialised against sensor management and against another
+ * measurement cycle: a task calling aj_sr04m_new() or aj_sr04m_delete() waits
+ * for the cycle in progress to finish, and two tasks calling
+ * aj_sr04m_trigger_all() run one after the other rather than interleaved.
+ * That cost is deliberate; the alternative is a table that changes shape
+ * halfway through a walk that lasts milliseconds.
+ *
+ * aj_sr04m_trigger() and aj_sr04m_read_distance() take no lock: they act on a
+ * handle the caller supplies and never look at the table. What that promises,
+ * and what it does not:
+ *    - calls on *different* handles may run concurrently.
+ *    - calls on the *same* handle may not. A sensor owns a single capture
+ *      buffer and a single completion semaphore, so a second trigger re-arms
+ *      the capture the first read is still waiting for.
+ *    - neither may overlap an aj_sr04m_delete() of that same handle. No lock
+ *      inside the driver can fix that: the caller is holding a raw pointer to
+ *      the instance being released. Handle lifetime is the caller's to
+ *      arrange.
+ *
+ * @attention No entry point is callable from an interrupt handler: they take
+ * a mutex, and the read paths block.
+ */
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -240,6 +279,10 @@ void aj_sr04m_delete(aj_sr04m_handle_t handle);
  * @note A sensor must be triggered again before every aj_sr04m_read_distance()
  * call, mode 3 on a software UART port included.
  *
+ * @attention Takes no lock. Two tasks may drive two different sensors at the
+ * same time, but not the same one, and neither may overlap an
+ * aj_sr04m_delete() of @p handle. See @ref aj_sr04m_thread_safety.
+ *
  * @param handle Handle returned by aj_sr04m_new()
  *
  * @return
@@ -254,9 +297,19 @@ esp_err_t aj_sr04m_trigger(aj_sr04m_handle_t handle);
 /**
  * @brief Read the distance measured by a specific sensor instance.
  *
+ * @note The call blocks until the measurement lands or its budget runs out.
+ * Modes 1-2 allow ~100 ms: RMT reports a capture only once the line has been
+ * idle for its threshold, so a 4.5 m echo — 26 ms of pulse plus 30 ms of
+ * idle — completes well after the round trip itself. Modes 3-5 wait on the
+ * module instead: 250 ms for a hardware UART reply, 300 ms on the software
+ * backend, and 20 ms in mode 3, whose frames are already buffered.
+ *
  * @param handle   Handle returned by aj_sr04m_new()
  * @param[out] distance distance in millimeters (valid only if the return
  * value is AJ_SR04M_DIST_OK)
+ *
+ * @attention Takes no lock, and blocks until the capture completes or times
+ * out. Same rules as aj_sr04m_trigger(); see @ref aj_sr04m_thread_safety.
  *
  * @return
  *    - AJ_SR04M_DIST_OK if the measurement is valid
@@ -293,6 +346,15 @@ int aj_sr04m_get_sensor_count(void);
  *
  * @param index 0-based index, below aj_sr04m_get_sensor_count()
  *
+ * @attention The returned handle is a snapshot, and the driver's mutex only
+ * covers the lookup itself. If another task calls aj_sr04m_delete() between
+ * this call and the use of its result, the same index now names a different
+ * sensor — and should that other task have deleted the very sensor returned
+ * here, the handle points at a released instance and using it is undefined.
+ * Keeping sensor creation and deletion in a single task, or holding the
+ * handles that task hands out rather than re-reading them by index, is what
+ * makes the result safe to use.
+ *
  * @return
  *    - the sensor handle
  *    - NULL if @p index is out of range
@@ -304,6 +366,10 @@ aj_sr04m_handle_t aj_sr04m_get_handle(int index);
  *
  * Sensors that fail to trigger do not stop the ones after them: the whole set
  * is walked before an error surfaces.
+ *
+ * @note Holds the driver's mutex for the whole walk, delays between triggers
+ * included, so sensor creation and deletion wait for it. See
+ * @ref aj_sr04m_thread_safety.
  *
  * @return
  *    - ESP_OK if at least one sensor was triggered successfully
@@ -321,6 +387,9 @@ esp_err_t aj_sr04m_trigger_all(void);
  * @param[out] statuses       array to receive measurement statuses
  * @param[in]  max_sensors    capacity of the provided arrays
  * @param[out] out_sensor_count number of sensors read
+ *
+ * @note Holds the driver's mutex for the whole walk, and blocks on each
+ * sensor's capture while doing so. See @ref aj_sr04m_thread_safety.
  *
  * @return
  *    - ESP_OK on success

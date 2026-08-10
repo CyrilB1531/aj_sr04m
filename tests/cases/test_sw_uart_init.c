@@ -71,6 +71,34 @@ TEST_CASE("sw uart init: fails on rmt_enable error",
   assert_init_fails_and_releases_tx_pin();
 }
 
+/* Regression for #38, software-backend side — the one that made the window
+ * reachable in ordinary use, mode 3 especially: the module streams
+ * unprompted, so a capture is in flight essentially all the time and a
+ * shutdown lands in the middle of one. Deleting rx_done_sem while the
+ * channel was still enabled left rmt_rx_done_cb() giving a freed handle from
+ * an ISR. The channel must be disabled and deleted first. */
+TEST_CASE("sw uart deinit: disables the RMT channel before freeing what the "
+          "ISR touches",
+          "[aj_sr04m][sw_uart][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+
+  /* Only the release matters here, not the semaphore setup created. */
+  g_teardown_mock.steps_len = 0;
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_deinit());
+
+  const int disabled = mocks_teardown_step_index(MOCKS_TEARDOWN_RMT_DISABLE);
+  const int deleted = mocks_teardown_step_index(MOCKS_TEARDOWN_RMT_DEL_CHANNEL);
+  const int sem_freed = mocks_teardown_step_index(MOCKS_TEARDOWN_SEM_DELETE);
+
+  TEST_ASSERT_GREATER_OR_EQUAL(0, disabled);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, deleted);
+  TEST_ASSERT_GREATER_OR_EQUAL(0, sem_freed);
+  TEST_ASSERT_LESS_THAN(sem_freed, disabled);
+  TEST_ASSERT_LESS_THAN(sem_freed, deleted);
+}
+
 TEST_CASE("sw uart deinit: releases the TX pin", "[aj_sr04m][sw_uart][init]") {
   mocks_reset();
   TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
@@ -101,6 +129,25 @@ TEST_CASE("sw uart trigger: arms the RMT receiver in every UART mode",
 #else
   (void)written_before;
 #endif
+}
+
+/* Regression for #37, software-backend side. The idle threshold is what
+ * delimits a frame here, so it has to outlast any gap the module leaves
+ * inside one reply — the whole 13-byte mode 5 payload takes 13.5 ms at 9600
+ * baud — while staying inside the 15-bit RMT duration counter, 32767 ticks at
+ * the 1 MHz resolution. This capture kind is sized independently of the modes
+ * 1-2 echo one, which answers to a different worst case. */
+TEST_CASE("sw uart trigger: arms the frame capture with a usable idle "
+          "threshold",
+          "[aj_sr04m][sw_uart][trigger]") {
+  mocks_reset();
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(ESP_OK, aj_sr04m_trigger_all());
+
+  TEST_ASSERT_GREATER_THAN_UINT32(13500u * 1000u,
+                                  g_rmt_mock.last_signal_range_max_ns);
+  TEST_ASSERT_LESS_OR_EQUAL_UINT32(32767u * 1000u,
+                                   g_rmt_mock.last_signal_range_max_ns);
 }
 
 /* Regression for #20, software-backend side. Arming and prompting are two

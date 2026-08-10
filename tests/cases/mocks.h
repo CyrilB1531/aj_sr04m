@@ -142,8 +142,23 @@ struct rmt_mock_state {
   void *last_receive_buffer;
   size_t last_receive_buffer_size;
 
+  /* Idle thresholds the driver asked for, straight from the last
+   * rmt_receive_config_t. signal_range_max_ns is what ends a capture, so it
+   * is the driver's statement of how long a level run may last — the echo
+   * pulse included. */
+  uint32_t last_signal_range_min_ns;
+  uint32_t last_signal_range_max_ns;
+
   bool fire_pulse_on_receive;
   uint32_t fire_pulse_high_us;
+
+  /* Delay, in milliseconds, between the arming and the completion. Zero
+   * fires synchronously inside rmt_receive, which is what most cases want;
+   * a non-zero value defers the callback to a helper task, so the read
+   * really blocks and its timeout is exercised. One deferred capture at a
+   * time — the helper writes into the buffer of the receive that armed it,
+   * so a case must let the completion land before the sensor is deleted. */
+  uint32_t fire_pulse_delay_ms;
 
   /* Bytes to synthesise as a 9600 8N1 line capture instead of the single
    * echo pulse, for the software UART backend. The mock encodes them the way
@@ -165,6 +180,38 @@ struct rmt_mock_state {
 };
 
 extern struct rmt_mock_state g_rmt_mock;
+
+/* Teardown steps, recorded in the order the driver performs them. Counters
+ * cannot express what matters when a sensor is released: the channel has to
+ * stop delivering completions before the semaphore its ISR callback gives is
+ * destroyed, and both happening is not the same as them happening in that
+ * order. MOCKS_TEARDOWN_SEM_DELETE is only ever recorded on the linux
+ * target, where the queue wraps live. */
+typedef enum {
+  MOCKS_TEARDOWN_RMT_DISABLE,
+  MOCKS_TEARDOWN_RMT_DEL_CHANNEL,
+  MOCKS_TEARDOWN_SEM_DELETE,
+} mocks_teardown_step_t;
+
+#define MOCKS_TEARDOWN_MAX_STEPS 32
+
+struct teardown_mock_state {
+  mocks_teardown_step_t steps[MOCKS_TEARDOWN_MAX_STEPS];
+  int steps_len;
+};
+
+extern struct teardown_mock_state g_teardown_mock;
+
+/**
+ * @brief Position of a teardown step in the recorded sequence.
+ *
+ * @param step step to look for
+ *
+ * @return
+ *    - the index of its first occurrence
+ *    - -1 if it was never recorded
+ */
+int mocks_teardown_step_index(mocks_teardown_step_t step);
 
 #endif /* hardware-driver mocks (linux all modes, ESP modes 1-2) */
 

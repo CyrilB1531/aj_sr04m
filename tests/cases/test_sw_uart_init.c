@@ -39,7 +39,11 @@
  * instead of handing back a half-built sensor, and the TX pin is left as a
  * high-impedance input rather than driven by a sensor that does not exist.
  * The pin check reads the last gpio_config() the driver made, which on a
- * failed setup is the release performed on the way out. */
+ * failed setup is the release performed on the way out.
+ *
+ * That matters more here than on the modes 1-2 side: the idle level of this
+ * pin is high, so a slot left half-built holds the line at exactly what a
+ * module reads as an attentive peer. */
 static void assert_init_fails_and_releases_tx_pin(void) {
   TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
   TEST_ASSERT_EQUAL(GPIO_MODE_INPUT, g_gpio_mock.last_mode);
@@ -231,7 +235,7 @@ TEST_CASE("sw uart init: fails when the RX buffer allocation fails",
   aj_sr04m_deinit();
   g_heap_mock.fail_rmt_buffer_alloc = true;
 
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  assert_init_fails_and_releases_tx_pin();
   TEST_ASSERT_EQUAL(1, g_heap_mock.rmt_buffer_alloc_calls);
 }
 
@@ -256,14 +260,26 @@ TEST_CASE("sw uart new: returns NULL before the driver is initialized",
   TEST_ASSERT_EQUAL(0, aj_sr04m_get_sensor_count());
 }
 
+/* gpio_config() applies the pin one setting at a time, so it can report a
+ * failure with the pin already switched to output — and the exit has no way
+ * to tell which. Releasing regardless is what makes the outcome the same
+ * either way; on a pin the call never touched, the release is a no-op. */
 TEST_CASE("sw uart init: fails on TX pin configuration error",
           "[aj_sr04m][sw_uart][init]") {
   mocks_reset();
   aj_sr04m_deinit();
   g_gpio_mock.config_ret = ESP_FAIL;
 
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
-  TEST_ASSERT_EQUAL(0, aj_sr04m_get_sensor_count());
+  assert_init_fails_and_releases_tx_pin();
+}
+
+TEST_CASE("sw uart init: fails on TX pin level error",
+          "[aj_sr04m][sw_uart][init]") {
+  mocks_reset();
+  aj_sr04m_deinit();
+  g_gpio_mock.set_level_ret = ESP_FAIL;
+
+  assert_init_fails_and_releases_tx_pin();
 }
 
 /* Regression for #18. The software backend used to wait

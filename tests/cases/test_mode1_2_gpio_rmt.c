@@ -27,8 +27,25 @@
 #include "freertos/task.h"
 #include "unity.h"
 
+#include "driver/gpio.h"
+
 #include "aj_sr04m.h"
 #include "mocks.h"
+
+/* Regression for #39. Setup drives TRIG as an output before it acquires
+ * anything else, so every exit past that point has to hand the pin back —
+ * otherwise a sensor that failed to build keeps the line pinned low and the
+ * application cannot reassign the pin. The check reads the last gpio_config()
+ * the driver made, which on a failed setup is the release on the way out.
+ *
+ * The release is expected even on the exit where gpio_config() itself
+ * failed: that call applies the pin one setting at a time, so it can fail
+ * with the pin already an output, and the exit has no way to tell. */
+static void assert_init_fails_and_releases_trigger_pin(void) {
+  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  TEST_ASSERT_EQUAL(GPIO_MODE_INPUT, g_gpio_mock.last_mode);
+  TEST_ASSERT_EQUAL(0, aj_sr04m_get_sensor_count());
+}
 
 TEST_CASE("init: GPIO+RMT success path", "[aj_sr04m][init]") {
   mocks_reset();
@@ -44,32 +61,32 @@ TEST_CASE("init: GPIO+RMT success path", "[aj_sr04m][init]") {
 TEST_CASE("init: fails on gpio_config error", "[aj_sr04m][init]") {
   mocks_reset();
   g_gpio_mock.config_ret = ESP_FAIL;
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  assert_init_fails_and_releases_trigger_pin();
 }
 
 TEST_CASE("init: fails on gpio_set_level error", "[aj_sr04m][init]") {
   mocks_reset();
   g_gpio_mock.set_level_ret = ESP_FAIL;
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  assert_init_fails_and_releases_trigger_pin();
 }
 
 TEST_CASE("init: fails on rmt_new_rx_channel error", "[aj_sr04m][init]") {
   mocks_reset();
   g_rmt_mock.new_rx_channel_ret = ESP_FAIL;
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  assert_init_fails_and_releases_trigger_pin();
 }
 
 TEST_CASE("init: fails on rmt_rx_register_event_callbacks error",
           "[aj_sr04m][init]") {
   mocks_reset();
   g_rmt_mock.register_event_callbacks_ret = ESP_FAIL;
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  assert_init_fails_and_releases_trigger_pin();
 }
 
 TEST_CASE("init: fails on rmt_enable error", "[aj_sr04m][init]") {
   mocks_reset();
   g_rmt_mock.enable_ret = ESP_FAIL;
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  assert_init_fails_and_releases_trigger_pin();
 }
 
 TEST_CASE("trigger: drives GPIO high then low and starts RMT receive",
@@ -308,11 +325,8 @@ TEST_CASE("init: fails when the RMT buffer allocation fails",
   aj_sr04m_deinit();
   g_heap_mock.fail_rmt_buffer_alloc = true;
 
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  assert_init_fails_and_releases_trigger_pin();
   TEST_ASSERT_EQUAL(1, g_heap_mock.rmt_buffer_alloc_calls);
-  /* Setup got as far as driving the trigger pin, so it must have handed it
-   * back before giving up. */
-  TEST_ASSERT_EQUAL(GPIO_MODE_INPUT, g_gpio_mock.last_mode);
 }
 
 TEST_CASE("init: fails when the RMT semaphore cannot be created",
@@ -321,7 +335,7 @@ TEST_CASE("init: fails when the RMT semaphore cannot be created",
   aj_sr04m_deinit();
   g_heap_mock.fail_semaphore_create = true;
 
-  TEST_ASSERT_NOT_EQUAL(ESP_OK, aj_sr04m_init());
+  assert_init_fails_and_releases_trigger_pin();
   TEST_ASSERT_EQUAL(1, g_heap_mock.semaphore_create_calls);
 }
 
